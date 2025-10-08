@@ -464,17 +464,37 @@ Return valid JSON only.
             elif act["action"] == "add":
                 name = act["activity"]
                 addr_hint = act.get("address", "")
-                # 🔹 Ask Azure OpenAI to enrich with full address + lat/lon
+                # Extract destination from user's travel history
+                destination = "Unknown"
+                for msg in session['history']:
+                    if any(place in msg.lower() for place in ['hawaii', 'new york', 'paris', 'london', 'tokyo', 'dubai', 'singapore', 'bangkok', 'mumbai', 'delhi', 'goa', 'kerala', 'rajasthan', 'agra', 'jaipur', 'udaipur']):
+                        # Extract likely destination
+                        words = msg.split()
+                        for i, word in enumerate(words):
+                            if word.lower() in ['to', 'in', 'visiting', 'going']:
+                                if i + 1 < len(words):
+                                    destination = words[i + 1].title()
+                                    break
+                        if destination == "Unknown":
+                            for word in words:
+                                if word.lower() in ['hawaii', 'newyork', 'paris', 'london', 'tokyo', 'dubai', 'singapore', 'bangkok', 'mumbai', 'delhi', 'goa', 'kerala', 'rajasthan', 'agra', 'jaipur', 'udaipur']:
+                                    destination = word.title()
+                                    break
+                        break
+                
+                # 🔹 Ask Azure OpenAI to find real place in destination city
                 geo_prompt = f"""
 You are a travel assistant with knowledge of places worldwide.
-Find the full postal address and approximate latitude/longitude for this place:
-{name}, {addr_hint}.
+Find a real, specific, highly-rated {name} in {destination}. 
+Do not create generic names - find an actual establishment that exists.
 Return JSON only in this format:
 {{
-  "address": "Full address",
+  "name": "Actual restaurant/place name",
+  "address": "Full address in {destination}",
   "latitude": 12.34,
   "longitude": 56.78
 }}
+Example: If user asks for "Mexican restaurant" in Hawaii, find a real Mexican restaurant like "Frida's Mexican Beach House" with its actual address.
 """
                 try:
                     geo_resp = client.chat.completions.create(
@@ -486,6 +506,7 @@ Return JSON only in this format:
                         response_format={"type": "json_object"}
                     )
                     geo_json = json.loads(geo_resp.choices[0].message.content)
+                    name = geo_json.get("name", name)  # Use real place name if found
                     address = geo_json.get("address", addr_hint or "Unknown")
                     lat = geo_json.get("latitude", 0.0)
                     lon = geo_json.get("longitude", 0.0)
