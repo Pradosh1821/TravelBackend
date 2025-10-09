@@ -343,6 +343,44 @@ Rules:
         except Exception:
             return {"done": False, "error": "Invalid JSON from AI", "raw": raw_content}
 
+        # Add summary section with counts only
+        summary = {
+            "counts": {
+                "flights": 0,
+                "transfers": 0,
+                "hotels": 0,
+                "activities": 0,
+                "meals": 0
+            }
+        }
+        
+        # Count inter-city travel (flights)
+        if "inter_city_travel" in result_json:
+            summary["counts"]["flights"] = len(result_json["inter_city_travel"])
+        
+        # Count hotels, activities, meals, transfers from cities
+        if "cities" in result_json:
+            for city in result_json["cities"]:
+                # Count hotels
+                if "hotel" in city:
+                    summary["counts"]["hotels"] += 1
+                
+                # Count activities, meals, transfers from recommendations
+                if "recommendations" in city:
+                    for day in city["recommendations"]:
+                        if "activities" in day:
+                            for activity in day["activities"]:
+                                action = activity.get("action", "")
+                                name = activity.get("name", "")
+                                
+                                if action == "Transfer" or "transfer" in name.lower():
+                                    summary["counts"]["transfers"] += 1
+                                elif "meal" in activity:
+                                    summary["counts"]["meals"] += 1
+                                elif action not in ["Arrival", "Hotel Check-in", "Return to Hotel", "Hotel Check-out", "Departure"]:
+                                    summary["counts"]["activities"] += 1
+        
+        result_json["summary"] = summary
         final_result = finalize_result(result_json, session_id)
         session["result"] = final_result
 
@@ -685,6 +723,44 @@ Return JSON: {{"distance": "X km", "time": "X mins by taxi"}}
         
         # --- Save updates or fallback ---
         if updated:
+            # Regenerate summary after updates
+            summary = {
+                "counts": {
+                    "flights": 0,
+                    "transfers": 0,
+                    "hotels": 0,
+                    "activities": 0,
+                    "meals": 0
+                }
+            }
+            
+            # Count inter-city travel (flights)
+            if "inter_city_travel" in current_result:
+                summary["counts"]["flights"] = len(current_result["inter_city_travel"])
+            
+            # Count hotels, activities, meals, transfers from cities
+            if "cities" in current_result:
+                for city in current_result["cities"]:
+                    # Count hotels
+                    if "hotel" in city:
+                        summary["counts"]["hotels"] += 1
+                    
+                    # Count activities, meals, transfers from recommendations
+                    if "recommendations" in city:
+                        for day in city["recommendations"]:
+                            if "activities" in day:
+                                for activity in day["activities"]:
+                                    action = activity.get("action", "")
+                                    name = activity.get("name", "")
+                                    
+                                    if action == "Transfer" or "transfer" in name.lower():
+                                        summary["counts"]["transfers"] += 1
+                                    elif "meal" in activity:
+                                        summary["counts"]["meals"] += 1
+                                    elif action not in ["Arrival", "Hotel Check-in", "Return to Hotel", "Hotel Check-out", "Departure"]:
+                                        summary["counts"]["activities"] += 1
+            
+            current_result["summary"] = summary
             session["result"] = current_result
             try:
                 cosmos_helper.save_result(current_result)
