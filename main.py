@@ -60,6 +60,7 @@ async def chat(user_input: UserInput):
             "asked_another": False,
             "result": None,
             "expecting_origin": False,
+            "expecting_travel_style": False,
             "origin": None
         }
         greeting = (
@@ -81,7 +82,7 @@ async def chat(user_input: UserInput):
             session["mode"] = "itinerary"
             session["expecting_origin"] = True
             return {
-                "next_question": "Great! First, tell me — from where are you planning your trip?"
+                "next_question": "Great! Let's start planning your journey. From which city will you be starting your trip?"
             }
         elif "destination" in answer.lower():
             session["mode"] = "destinations"
@@ -96,17 +97,45 @@ async def chat(user_input: UserInput):
     if session.get("expecting_origin"):
         session["origin"] = answer
         session["expecting_origin"] = False
+        session["expecting_travel_style"] = True
         return {
-            "next_question": (
-                f"Awesome! You're starting from {answer}. Now tell me more about your travel preferences.\n"
-                "For example: 'I am travelling alone to New York for 2 days and I am looking for leisure stay with some good hotels in the neighbourhood, consider a good night life as well.'"
-            )
+            "next_question": f"Awesome! You're starting from {answer}. Let me understand your travel style better - Choose one Below",
+            "options": [
+                "Solo Traveler - no specific requirements",
+                "Family Vacation - with fun, food at the beach", 
+                "Perfect girls trip - to any beach destination",
+                "None of these. I'll describe my trip myself"
+            ]
         }
+    
+    # ✅ Step 2.2: Handle travel style selection
+    if session.get("expecting_travel_style"):
+        session["expecting_travel_style"] = False
+        if "solo" in answer.lower():
+            return {"next_question": "Got it! You're travelling solo - sounds exciting! Where are you planning to go?"}
+        elif "family" in answer.lower():
+            return {"next_question": "Perfect! A family vacation with fun and food at the beach sounds amazing! Where are you planning to go?"}
+        elif "girls trip" in answer.lower():
+            return {"next_question": "Awesome! A perfect girls trip to a beach destination - that's going to be so much fun! Where are you planning to go?"}
+        elif "none" in answer.lower() or "describe" in answer.lower():
+            return {"next_question": "No problem! Please describe your trip in your own words - tell me about your travel preferences, destination, duration, and what you're looking for."}
+        else:
+            # Handle numbered choices
+            if answer.strip() == "1":
+                return {"next_question": "Got it! You're travelling solo - sounds exciting! Where are you planning to go?"}
+            elif answer.strip() == "2":
+                return {"next_question": "Perfect! A family vacation with fun and food at the beach sounds amazing! Where are you planning to go?"}
+            elif answer.strip() == "3":
+                return {"next_question": "Awesome! A perfect girls trip to a beach destination - that's going to be so much fun! Where are you planning to go?"}
+            elif answer.strip() == "4":
+                return {"next_question": "No problem! Please describe your trip in your own words - tell me about your travel preferences, destination, duration, and what you're looking for."}
+            else:
+                return {"next_question": "Please choose one of the options (1, 2, 3, or 4)."}
 
     user_choice = answer.lower()
 
     # ✅ Generate Persona + Itinerary
-    if user_choice in ["1", "generate persona", "generate persona & recommendations", "persona"]:
+    if user_choice in ["1", "generate persona", "generate persona & recommendations", "persona", "generate an itinerary", "itinerary"]:
         session["ready"] = True
         days = extract_days(" ".join(session["history"]))
         plan_prompt = f"""
@@ -389,22 +418,36 @@ Rules:
         except Exception as e:
             print("Cosmos DB error:", e)
 
-        feedback = []
-        text = " ".join(session["history"]).lower()
-        if re.search(r"[A-Z][a-z]+", " ".join(session["history"])):
-            feedback.append("Awesome! Destination locked ✈️")
-        if re.search(r"\b\d+\s*(day|days|night|nights)\b", text):
-            feedback.append("Got your duration 🗓️")
-        for w in ["work", "leisure", "adventure", "food", "culture", "holiday", "business"]:
-            if w in text:
-                feedback.append(f"Noted — {w.capitalize()} trip 🎯")
-                break
-        feedback.append("Here's your personalized persona and travel plan 🎉")
+        # Generate single dynamic feedback using AI
+        feedback_prompt = f"""
+Based on this travel conversation history: {" ".join(session["history"])}
+Origin: {session.get("origin", "Unknown")}
+
+Generate ONE single enthusiastic sentence as Laura the travel assistant that:
+- Acknowledges specific details from the user's input (destination, duration, travel style, etc.)
+- Uses appropriate emojis
+- Is conversational and excited
+- Ends with "Here's your personalized itinerary 🎉"
+
+Return just the sentence, no JSON format needed.
+"""
+        
+        try:
+            feedback_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant. Generate one personalized feedback sentence."},
+                    {"role": "user", "content": feedback_prompt}
+                ]
+            )
+            feedback = [feedback_resp.choices[0].message.content.strip()]
+        except:
+            feedback = ["Perfect! I've got all your travel details and this is going to be an amazing trip - here's your personalized itinerary 🎉"]
 
         return {"done": True, "feedback": feedback, "result": final_result, "options": ["Update Plan", "End Chat"]}
 
     # ✅ Ask Another Question
-    if user_choice in ["2", "ask another", "ask another question"]:
+    if user_choice in ["2", "ask another", "ask another question", "add more preferences", "preferences", "more preferences"]:
         clarify_prompt = f"""
 The user so far said: {" ".join(session["history"])}.
 Ask ONE more clarifying question about their trip.
@@ -422,24 +465,16 @@ Make it conversational and friendly.
             session["asked_another"] = False
             return {"next_question": next_q}
         session["asked_another"] = True
-        return {"next_question": next_q, "options": ["Generate Persona & Recommendations", "Ask Another Question"]}
+        return {"next_question": next_q, "options": ["Generate an itinerary", "Add more preferences"]}
 
     # ✅ Step 4: Acknowledge itinerary mode before persona
     if session["mode"] == "itinerary" and not session["ready"]:
-        ack_prompt = f"""
-The user said: "{answer}".
-Acknowledge briefly and ask:
-"Do you want me to generate your persona and travel plan now, or should I ask you another question to refine your trip?"
-"""
-        ack_resp = client.chat.completions.create(
-            model=deployment_name,
-            messages=[
-                {"role": "system", "content": "You are a helpful travel assistant."},
-                {"role": "user", "content": ack_prompt}
-            ]
-        )
-        next_q = ack_resp.choices[0].message.content.strip()
-        return {"next_question": next_q, "options": ["Generate Persona & Recommendations", "Ask Another Question"]}
+        # Extract destination from the answer
+        destination = answer.strip()
+        return {
+            "next_question": f"Got it, {destination}! Shall I go ahead and create your itinerary or you want to add more preferences to refine your trip?",
+            "options": ["Generate an itinerary", "Add more preferences"]
+        }
 
        # ✅ Step 5: Updates after plan is generated (natural language + enrichment)
     if session.get("result"):
