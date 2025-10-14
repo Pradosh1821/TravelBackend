@@ -59,9 +59,13 @@ async def chat(user_input: UserInput):
             "history": [],
             "asked_another": False,
             "result": None,
-            "expecting_origin": False,
-            "expecting_travel_style": False,
-            "origin": None
+            "step": "initial",
+            "travel_plan": None,
+            "trip_mood": None,
+            "activity_level": None,
+            "experience": None,
+            "origin": None,
+            "waiting_for_answer": False
         }
         greeting = (
             "Hello!\n"
@@ -80,9 +84,10 @@ async def chat(user_input: UserInput):
     if session["mode"] is None:
         if "itinerary" in answer.lower():
             session["mode"] = "itinerary"
-            session["expecting_origin"] = True
+            session["step"] = "travel_plan"
             return {
-                "next_question": "Great! Let's start planning your journey. From which city will you be starting your trip?"
+                "next_question": "Sound Great! Lets get started. Which travel plan are you going with?",
+                "options": ["Boys Trip", "Solo Adventure", "Family Getaway", "Girls Vacation"]
             }
         elif "destination" in answer.lower():
             session["mode"] = "destinations"
@@ -93,49 +98,209 @@ async def chat(user_input: UserInput):
         else:
             return {"next_question": "Please choose 1, 2, or 3 from the options."}
 
-    # ✅ Step 2.1: Capture origin city
-    if session.get("expecting_origin"):
-        session["origin"] = answer
-        session["expecting_origin"] = False
-        session["expecting_travel_style"] = True
+    # New conversation flow
+    if session["step"] == "travel_plan":
+        session["travel_plan"] = answer
+        session["step"] = "trip_mood"
+        # Generate dynamic response
+        try:
+            response_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
+                    {"role": "user", "content": f"User selected '{answer}' as their travel plan. Generate one enthusiastic sentence acknowledging this choice."}
+                ]
+            )
+            dynamic_response = response_resp.choices[0].message.content.strip()
+        except:
+            dynamic_response = f"Awesome! {answer} sounds amazing!"
+        
         return {
-            "next_question": f"Awesome! You're starting from {answer}. Let me understand your travel style better - Choose one Below",
-            "options": [
-                "Solo Traveler - no specific requirements",
-                "Family Vacation - with fun, food at the beach", 
-                "Perfect girls trip - to any beach destination",
-                "None of these. I'll describe my trip myself"
-            ]
+            "next_question": f"{dynamic_response} What's your trip mood like?",
+            "options": ["Beach Getaway", "Into the mountains", "Party Goers"]
         }
     
-    # ✅ Step 2.2: Handle travel style selection
-    if session.get("expecting_travel_style"):
-        session["expecting_travel_style"] = False
-        if "solo" in answer.lower():
-            return {"next_question": "Got it! You're travelling solo - sounds exciting! Where are you planning to go?"}
-        elif "family" in answer.lower():
-            return {"next_question": "Perfect! A family vacation with fun and food at the beach sounds amazing! Where are you planning to go?"}
-        elif "girls trip" in answer.lower():
-            return {"next_question": "Awesome! A perfect girls trip to a beach destination - that's going to be so much fun! Where are you planning to go?"}
-        elif "none" in answer.lower() or "describe" in answer.lower():
-            return {"next_question": "No problem! Please describe your trip in your own words - tell me about your travel preferences, destination, duration, and what you're looking for."}
-        else:
-            # Handle numbered choices
-            if answer.strip() == "1":
-                return {"next_question": "Got it! You're travelling solo - sounds exciting! Where are you planning to go?"}
-            elif answer.strip() == "2":
-                return {"next_question": "Perfect! A family vacation with fun and food at the beach sounds amazing! Where are you planning to go?"}
-            elif answer.strip() == "3":
-                return {"next_question": "Awesome! A perfect girls trip to a beach destination - that's going to be so much fun! Where are you planning to go?"}
-            elif answer.strip() == "4":
-                return {"next_question": "No problem! Please describe your trip in your own words - tell me about your travel preferences, destination, duration, and what you're looking for."}
-            else:
-                return {"next_question": "Please choose one of the options (1, 2, 3, or 4)."}
+    elif session["step"] == "trip_mood":
+        session["trip_mood"] = answer
+        session["step"] = "activity_level"
+        # Generate dynamic response
+        try:
+            response_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
+                    {"role": "user", "content": f"User selected '{answer}' as their trip mood. Generate one enthusiastic sentence acknowledging this choice."}
+                ]
+            )
+            dynamic_response = response_resp.choices[0].message.content.strip()
+        except:
+            dynamic_response = f"Perfect! {answer} is going to be incredible!"
+        
+        return {
+            "next_question": f"{dynamic_response} How active you want your trip to be?",
+            "options": ["Relaxed", "Moderate", "Packed Itinerary"]
+        }
+    
+    elif session["step"] == "activity_level":
+        session["activity_level"] = answer
+        session["step"] = "experience"
+        # Generate dynamic response and experience options
+        try:
+            response_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
+                    {"role": "user", "content": f"User selected '{answer}' activity level. Generate one enthusiastic sentence acknowledging this choice."}
+                ]
+            )
+            dynamic_response = response_resp.choices[0].message.content.strip()
+            
+            # Generate experience options based on previous selections
+            options_prompt = f"""
+Based on these user preferences:
+- Travel Plan: {session['travel_plan']}
+- Trip Mood: {session['trip_mood']}
+- Activity Level: {session['activity_level']}
 
+Generate exactly 5 simple travel experience types (NOT destinations or detailed descriptions). Just short activity names.
+
+Examples:
+- Boys Trip + Beach Getaway + Packed Itinerary → ["Water Sports", "Nightlife", "Beach Parties", "Surfing Lessons", "Jet Skiing"]
+- Family Getaway + Beach Getaway + Relaxed → ["Beach Relaxation", "Family Activities", "Local Culture", "Food Experiences", "Nature Walks"]
+- Solo Adventure + Mountains + Moderate → ["Hiking", "Photography", "Local Cuisine", "Cultural Sites", "Adventure Sports"]
+
+Return ONLY this JSON format: {{"options": ["Experience1", "Experience2", "Experience3", "Experience4", "Experience5"]}}
+"""
+            
+            options_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You generate simple travel experience names. Return only short activity types, not destinations or long descriptions."},
+                    {"role": "user", "content": options_prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            options_json = json.loads(options_resp.choices[0].message.content)
+            experience_options = options_json.get("options", ["Adventure Sports", "Cultural Exploration", "Nightlife", "Food Tours", "Relaxation"])
+        except Exception as e:
+            print(f"Experience options generation error: {e}")
+            dynamic_response = f"Great choice! {answer} pace is perfect!"
+            # Generate contextual fallback options based on selections
+            travel_plan = session.get('travel_plan', '').lower()
+            trip_mood = session.get('trip_mood', '').lower()
+            
+            if "boys" in travel_plan and "beach" in trip_mood:
+                experience_options = ["Water Sports", "Nightlife", "Beach Parties", "Surfing Lessons", "Jet Skiing"]
+            elif "boys" in travel_plan and "party" in trip_mood:
+                experience_options = ["Nightlife", "Club Hopping", "Bar Crawls", "Live Music", "Party Tours"]
+            elif "family" in travel_plan:
+                experience_options = ["Family Activities", "Cultural Sites", "Nature Walks", "Food Tours", "Educational Tours"]
+            elif "solo" in travel_plan and "mountain" in trip_mood:
+                experience_options = ["Hiking", "Photography", "Local Cuisine", "Cultural Sites", "Adventure Sports"]
+            elif "girls" in travel_plan and "beach" in trip_mood:
+                experience_options = ["Beach Activities", "Spa & Wellness", "Shopping", "Food & Wine", "Sunset Tours"]
+            else:
+                experience_options = ["Adventure Sports", "Cultural Exploration", "Nightlife", "Food Tours", "Relaxation"]
+        
+        return {
+            "next_question": f"{dynamic_response} Which experience are you chasing?",
+            "options": experience_options
+        }
+    
+    elif session["step"] == "experience":
+        session["experience"] = answer
+        session["step"] = "final_details"
+        # Generate dynamic response
+        try:
+            response_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
+                    {"role": "user", "content": f"User selected '{answer}' as their experience. Generate one enthusiastic sentence acknowledging this choice."}
+                ]
+            )
+            dynamic_response = response_resp.choices[0].message.content.strip()
+        except:
+            dynamic_response = f"Excellent! {answer} will make this trip unforgettable!"
+        
+        return {
+            "next_question": f"{dynamic_response} Almost there! Please mention your origin, destination and number of travellers."
+        }
+    
+    elif session["step"] == "final_details":
+        session["step"] = "ready_to_generate"
+        # Generate dynamic response
+        try:
+            response_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
+                    {"role": "user", "content": f"User provided final details: '{answer}'. Generate one enthusiastic sentence acknowledging their complete travel information."}
+                ]
+            )
+            dynamic_response = response_resp.choices[0].message.content.strip()
+        except:
+            dynamic_response = "Perfect! I have all the details I need to create your amazing itinerary!"
+        
+        return {
+            "next_question": dynamic_response,
+            "options": ["Generate your personalized itinerary", "Keep editing"]
+        }
+    
     user_choice = answer.lower()
+    
+    # Handle Keep editing flow
+    if session["step"] == "ready_to_generate" and "keep editing" in user_choice:
+        session["waiting_for_answer"] = True
+        # Ask a clarifying question
+        clarify_prompt = f"""
+The user's travel preferences so far:
+Travel Plan: {session.get('travel_plan', 'Not specified')}
+Trip Mood: {session.get('trip_mood', 'Not specified')}
+Activity Level: {session.get('activity_level', 'Not specified')}
+Experience: {session.get('experience', 'Not specified')}
+Final Details: {session['history'][-2] if len(session['history']) >= 2 else 'Not specified'}
+
+Ask ONE more clarifying question about their trip to refine their preferences.
+Make it conversational and friendly.
+"""
+        try:
+            clarify_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are Laura, a helpful travel assistant."},
+                    {"role": "user", "content": clarify_prompt}
+                ]
+            )
+            next_q = clarify_resp.choices[0].message.content.strip()
+        except:
+            next_q = "Tell me more about what you're looking for in this trip!"
+        
+        return {"next_question": next_q}
+    
+    # Handle user's answer to the clarifying question
+    elif session.get("waiting_for_answer"):
+        session["waiting_for_answer"] = False
+        # Generate dynamic response to user's answer
+        try:
+            response_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
+                    {"role": "user", "content": f"User answered: '{answer}'. Generate one enthusiastic sentence acknowledging their response."}
+                ]
+            )
+            dynamic_response = response_resp.choices[0].message.content.strip()
+        except:
+            dynamic_response = "Great! That helps me understand your preferences better!"
+        
+        return {
+            "next_question": dynamic_response,
+            "options": ["Generate your personalized itinerary", "Keep editing"]
+        }
 
     # ✅ Generate Persona + Itinerary
-    if user_choice in ["1", "generate persona", "generate persona & recommendations", "persona", "generate an itinerary", "itinerary"]:
+    if user_choice in ["1", "generate persona", "generate persona & recommendations", "persona", "generate an itinerary", "itinerary", "generate your personalized itinerary"]:
         session["ready"] = True
         days = extract_days(" ".join(session["history"]))
         plan_prompt = f"""
@@ -418,35 +583,9 @@ Rules:
         except Exception as e:
             print("Cosmos DB error:", e)
 
-        # Generate single dynamic feedback using AI
-        feedback_prompt = f"""
-Based on this travel conversation history: {" ".join(session["history"])}
-Origin: {session.get("origin", "Unknown")}
+        return {"done": True, "feedback": [], "result": final_result, "options": ["Update Plan", "End Chat"]}
 
-Generate ONE single enthusiastic sentence as Laura the travel assistant that:
-- Acknowledges specific details from the user's input (destination, duration, travel style, etc.)
-- Uses appropriate emojis
-- Is conversational and excited
-- Ends with "Here's your personalized itinerary 🎉"
-
-Return just the sentence, no JSON format needed.
-"""
-        
-        try:
-            feedback_resp = client.chat.completions.create(
-                model=deployment_name,
-                messages=[
-                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant. Generate one personalized feedback sentence."},
-                    {"role": "user", "content": feedback_prompt}
-                ]
-            )
-            feedback = [feedback_resp.choices[0].message.content.strip()]
-        except:
-            feedback = ["Perfect! I've got all your travel details and this is going to be an amazing trip - here's your personalized itinerary 🎉"]
-
-        return {"done": True, "feedback": feedback, "result": final_result, "options": ["Update Plan", "End Chat"]}
-
-    # ✅ Ask Another Question
+    # ✅ Ask Another Question (legacy support)
     if user_choice in ["2", "ask another", "ask another question", "add more preferences", "preferences", "more preferences"]:
         clarify_prompt = f"""
 The user so far said: {" ".join(session["history"])}.
@@ -467,14 +606,7 @@ Make it conversational and friendly.
         session["asked_another"] = True
         return {"next_question": next_q, "options": ["Generate an itinerary", "Add more preferences"]}
 
-    # ✅ Step 4: Acknowledge itinerary mode before persona
-    if session["mode"] == "itinerary" and not session["ready"]:
-        # Extract destination from the answer
-        destination = answer.strip()
-        return {
-            "next_question": f"Got it, {destination}! Shall I go ahead and create your itinerary or you want to add more preferences to refine your trip?",
-            "options": ["Generate an itinerary", "Add more preferences"]
-        }
+
 
        # ✅ Step 5: Updates after plan is generated (natural language + enrichment)
     if session.get("result"):
