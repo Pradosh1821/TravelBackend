@@ -65,7 +65,8 @@ async def chat(user_input: UserInput):
             "activity_level": None,
             "experience": None,
             "origin": None,
-            "waiting_for_answer": False
+            "waiting_for_answer": False,
+            "pending_suggestion": None
         }
         greeting = (
             "Hello!\n"
@@ -79,6 +80,220 @@ async def chat(user_input: UserInput):
 
     session = user_sessions[session_id]
     session["history"].append(answer)
+    
+    # Check if this is an update request for existing plan
+    if session.get("result") and answer.lower() not in ["update plan", "end chat"]:
+        # User has a plan and is making an update request - handle it directly
+        current_result = session["result"]
+        cities = current_result.get("cities", [])
+        if not cities or "recommendations" not in cities[0]:
+            return {"next_question": "No recommendations found in your current plan to update."}
+        recommendations = cities[0]["recommendations"]
+        destination = cities[0].get("city_name", "Unknown")
+        
+        # Handle clarification responses for pending additions FIRST
+        if session.get("pending_addition"):
+            pending_add = session["pending_addition"]
+            selected_place = pending_add["selected_place"]
+            item_type = pending_add["item_type"]
+            
+            if "Replace" in answer:
+                # Extract the place name from the answer (e.g., "Replace Island Style (Lunch on Day 2)" or "Replace Waikiki Beach on Day 1")
+                import re
+                match = re.search(r'Replace (.+?) (?:\(|on)', answer)
+                target_place = match.group(1) if match else ""
+                
+                # Get comprehensive details for the selected place
+                detail_prompt = f"""
+Find complete details for {selected_place} in {destination}:
+Return JSON: {{"name": "Official name", "address": "Complete address", "latitude": 0.0, "longitude": 0.0, "highlights": "Detailed description", "why_recommended": "Specific reasons", "carry": "Practical items", "rating": 4.5, "reviews": {{"Review 1": "text", "Review 2": "text"}}}}
+"""
+                
+                try:
+                    detail_resp = client.chat.completions.create(
+                        model=deployment_name,
+                        messages=[{"role": "system", "content": "Provide real travel information."}, {"role": "user", "content": detail_prompt}],
+                        response_format={"type": "json_object"}
+                    )
+                    detail_json = json.loads(detail_resp.choices[0].message.content)
+                except:
+                    detail_json = {"name": selected_place, "highlights": f"{selected_place} offers great experience.", "why_recommended": f"{selected_place} is highly recommended."}
+                
+                # Find and replace the specific place mentioned in the answer
+                for day in recommendations:
+                    for activity in day["activities"]:
+                        if target_place and target_place.lower() in activity.get("name", "").lower():
+                            # Preserve exact JSON structure
+                            activity["name"] = detail_json.get("name", selected_place)
+                            activity["address"] = detail_json.get("address", activity.get("address", "Address not available"))
+                            activity["latitude"] = detail_json.get("latitude", activity.get("latitude", 0.0))
+                            activity["longitude"] = detail_json.get("longitude", activity.get("longitude", 0.0))
+                            if "highlights" in activity:
+                                activity["highlights"] = detail_json.get("highlights", activity["highlights"])
+                            if "why_recommended" in activity:
+                                activity["why_recommended"] = detail_json.get("why_recommended", activity["why_recommended"])
+                            if "carry" in activity:
+                                activity["carry"] = detail_json.get("carry", activity["carry"])
+                            if "rating" in activity:
+                                activity["rating"] = detail_json.get("rating", activity["rating"])
+                            if "reviews" in activity:
+                                activity["reviews"] = detail_json.get("reviews", activity["reviews"])
+                            break
+                
+                session["pending_addition"] = None
+                session["result"] = current_result
+                try:
+                    cosmos_helper.save_result(current_result)
+                except Exception as e:
+                    print("Cosmos DB save error:", e)
+                return {"done": True, "feedback": [f"Perfect! Replaced with {selected_place}!"], "result": current_result, "options": ["Update Plan", "End Chat"]}
+        
+        # Check if user wants suggestions
+        suggestion_keywords = ["suggest", "recommend", "alternative", "instead", "different", "other", "replace", "change", "don't want", "not interested", "skip", "avoid", "hate", "dislike", "add some", "add other", "add another"]
+        wants_suggestions = any(keyword in answer.lower() for keyword in suggestion_keywords) or "?" in answer or len(answer.split()) > 3
+        
+        if wants_suggestions and not session.get("pending_suggestion"):
+            suggestion_prompt = f"""
+User request: "{answer}"
+Destination: {destination}
+Current itinerary: {json.dumps(recommendations, indent=2)}
+
+Analyze the user's request:
+1. If they mention a SPECIFIC place from the itinerary to replace (like "replace Hau Tree Lanai" or "instead of Eggs 'n Things"), put that exact place name in current_item
+2. If they make a GENERAL request (like "add mexican restaurant", "add some activity", "suggest breakfast place"), leave current_item as empty string
+3. IMPORTANT: Determine if this is food-related or activity-related:
+   - FOOD keywords: restaurant, food, eat, dining, meal, breakfast, lunch, dinner, cuisine, vegetarian, vegan, cafe, bar, snack
+   - ACTIVITY keywords: activity, attraction, sightseeing, tour, museum, beach, park, shopping, adventure
+4. For FOOD requests: item_type should be "breakfast", "lunch", or "dinner" (choose the most appropriate meal time)
+5. For ACTIVITY requests: item_type should be "activity"
+6. Provide 5 real place suggestions
+
+Return JSON: {{"understood_request": "what user wants", "current_item": "exact place name from itinerary OR empty string", "item_type": "breakfast/lunch/dinner/activity", "suggestions": ["Place1", "Place2", "Place3", "Place4", "Place5"], "reasoning": "why these fit"}}
+"""
+            
+            try:
+                suggestion_resp = client.chat.completions.create(
+                    model=deployment_name,
+                    messages=[
+                        {"role": "system", "content": "You are an intelligent travel assistant. Provide real place names."},
+                        {"role": "user", "content": suggestion_prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
+                suggestion_json = json.loads(suggestion_resp.choices[0].message.content)
+                
+                session["pending_suggestion"] = suggestion_json
+                understood = suggestion_json.get("understood_request", "your request")
+                suggestions = suggestion_json.get("suggestions", [])
+                
+                return {
+                    "next_question": f"I understand you want to change {understood}. Here are some great alternatives:",
+                    "options": suggestions + ["Keep current plan"]
+                }
+            except:
+                return {"next_question": "Could you tell me more specifically what you'd like to change?"}
+        
+        # Handle selection from suggestions
+        if session.get("pending_suggestion"):
+            pending = session["pending_suggestion"]
+            if answer == "Keep current plan":
+                session["pending_suggestion"] = None
+                return {"next_question": "Your plan remains unchanged. Anything else?", "options": ["Update Plan", "End Chat"]}
+            elif answer in pending.get("suggestions", []):
+                selected_place = answer
+                current_item = pending.get("current_item", "")
+                item_type = pending.get("item_type", "")
+                
+                print(f"DEBUG: current_item='{current_item}', item_type='{item_type}', selected_place='{selected_place}'")
+                
+                # Check if we have a specific item to replace
+                if current_item and current_item.strip():
+                    # Direct replacement - we know what to replace
+                    detail_prompt = f"""
+Find complete details for {selected_place} in {destination}:
+Return JSON: {{"name": "Official name", "address": "Complete address", "latitude": 0.0, "longitude": 0.0, "highlights": "Detailed description", "why_recommended": "Specific reasons", "carry": "Practical items", "rating": 4.5, "reviews": {{"Review 1": "text", "Review 2": "text"}}}}
+"""
+                    
+                    try:
+                        detail_resp = client.chat.completions.create(
+                            model=deployment_name,
+                            messages=[{"role": "system", "content": "Provide real travel information."}, {"role": "user", "content": detail_prompt}],
+                            response_format={"type": "json_object"}
+                        )
+                        detail_json = json.loads(detail_resp.choices[0].message.content)
+                        
+                        # Update activity preserving exact JSON structure
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                if current_item.lower() in activity.get("name", "").lower():
+                                    activity["name"] = detail_json.get("name", selected_place)
+                                    activity["address"] = detail_json.get("address", activity.get("address", "Address not available"))
+                                    activity["latitude"] = detail_json.get("latitude", activity.get("latitude", 0.0))
+                                    activity["longitude"] = detail_json.get("longitude", activity.get("longitude", 0.0))
+                                    if "highlights" in activity:
+                                        activity["highlights"] = detail_json.get("highlights", activity["highlights"])
+                                    if "why_recommended" in activity:
+                                        activity["why_recommended"] = detail_json.get("why_recommended", activity["why_recommended"])
+                                    if "carry" in activity:
+                                        activity["carry"] = detail_json.get("carry", activity["carry"])
+                                    if "rating" in activity:
+                                        activity["rating"] = detail_json.get("rating", activity["rating"])
+                                    if "reviews" in activity:
+                                        activity["reviews"] = detail_json.get("reviews", activity["reviews"])
+                                    break
+                    except:
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                if current_item.lower() in activity.get("name", "").lower():
+                                    activity["name"] = selected_place
+                                    break
+                    
+                    session["pending_suggestion"] = None
+                    session["result"] = current_result
+                    try:
+                        cosmos_helper.save_result(current_result)
+                    except Exception as e:
+                        print("Cosmos DB save error:", e)
+                    return {"done": True, "feedback": [f"Updated with {selected_place}!"], "result": current_result, "options": ["Update Plan", "End Chat"]}
+                
+                else:
+                    # No specific item to replace - need clarification
+                    session["pending_addition"] = {
+                        "selected_place": selected_place,
+                        "item_type": item_type
+                    }
+                    session["pending_suggestion"] = None
+                    
+                    # Generate comprehensive clarifying options
+                    if item_type in ["breakfast", "lunch", "dinner"]:
+                        # Show all meal options across all days
+                        meal_options = []
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                if activity.get("meal"):
+                                    meal_options.append(f"Replace {activity['name']} ({activity['meal']} on {day['day']})")
+                        
+                        return {
+                            "next_question": f"Where would you like to add {selected_place}?",
+                            "options": meal_options
+                        }
+                    
+                    else:
+                        # For activities, show all non-meal activities
+                        activity_options = []
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                if not activity.get("meal") and activity.get("action") not in ["Arrival", "Transfer", "Hotel Check-in", "Return to Hotel", "Hotel Check-out", "Departure"]:
+                                    activity_options.append(f"Replace {activity['name']} on {day['day']}")
+                        
+                        return {
+                            "next_question": f"Which activity would you like to replace with {selected_place}?",
+                            "options": activity_options
+                        }
+        
+
+        
+        return {"next_question": "Could you rephrase what you'd like to change?"}
 
     # Step 2: Handle option selection
     if session["mode"] is None:
@@ -608,8 +823,8 @@ Make it conversational and friendly.
 
 
 
-       # ✅ Step 5: Updates after plan is generated (natural language + enrichment)
-    if session.get("result"):
+    # ✅ Step 5: Updates after plan is generated (fallback for complex updates)
+    if session.get("result") and answer.lower() == "update plan":
         current_result = session["result"]
         updated = False
         feedback_msgs = []
@@ -619,9 +834,252 @@ Make it conversational and friendly.
         if not cities or "recommendations" not in cities[0]:
             return {"next_question": "No recommendations found in your current plan to update."}
         recommendations = cities[0]["recommendations"]
+        
+        # Enhanced intelligent suggestion system - handles any natural language request
+        suggestion_keywords = ["suggest", "recommend", "alternative", "instead", "different", "other", "replace", "change", "don't want", "not interested", "skip", "avoid", "hate", "dislike"]
+        
+        # Check if user wants suggestions (more flexible detection)
+        wants_suggestions = (
+            any(keyword in answer.lower() for keyword in suggestion_keywords) or
+            "?" in answer or  # Questions often indicate need for suggestions
+            len(answer.split()) > 3  # Longer requests likely need AI interpretation
+        )
+        
+        if wants_suggestions and not session.get("pending_suggestion"):
+            # Get destination from current itinerary
+            destination = cities[0].get("city_name", "Unknown")
+            
+            # Enhanced AI analysis of user request
+            suggestion_prompt = f"""
+User request: "{answer}"
+Destination: {destination}
+Current itinerary: {json.dumps(recommendations, indent=2)}
 
-        # --- AI prompt to parse natural language into actions ---
-        intent_prompt = f"""
+Analyze the user's natural language request and:
+1. Understand what they want to change/replace/avoid
+2. Identify the type of place (breakfast, lunch, dinner, activity, attraction, hotel, etc.)
+3. Find the specific current item they're referring to (if any)
+4. Generate 5 contextual alternatives of the same type in {destination}
+
+CRITICAL: The suggestions array must contain ONLY simple restaurant/place names as strings. Do NOT include addresses, descriptions, or any other data.
+
+Example of CORRECT format:
+"suggestions": ["Cholo's Homestyle Mexican", "Aloha Mexican Grill", "Taco del Mar", "Casa Oaxaca", "La Casa De Miel"]
+
+Example of WRONG format (do not do this):
+"suggestions": [{{"name": "Restaurant", "address": "123 St"}}, ...]
+
+Return JSON format:
+{{
+  "understood_request": "Clear description of what user wants",
+  "current_item": "Exact place name from itinerary if mentioned, otherwise empty string",
+  "item_type": "breakfast/lunch/dinner/activity/attraction/hotel",
+  "suggestions": ["Place Name 1", "Place Name 2", "Place Name 3", "Place Name 4", "Place Name 5"],
+  "reasoning": "Why these suggestions fit their request"
+}}
+"""
+            
+            try:
+                suggestion_resp = client.chat.completions.create(
+                    model=deployment_name,
+                    messages=[
+                        {"role": "system", "content": "You are an intelligent travel assistant that understands natural language requests and provides contextual suggestions. Always provide real, specific place names in the destination city."},
+                        {"role": "user", "content": suggestion_prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
+                suggestion_json = json.loads(suggestion_resp.choices[0].message.content)
+                
+                # Ensure suggestions are simple strings
+                suggestions = suggestion_json.get("suggestions", [])
+                clean_suggestions = []
+                for suggestion in suggestions:
+                    if isinstance(suggestion, dict):
+                        # Extract name from dict object
+                        name = suggestion.get("name", "")
+                        if not name:
+                            # Try other possible keys
+                            name = suggestion.get("restaurant", suggestion.get("place", str(suggestion)))
+                        clean_suggestions.append(name)
+                    elif isinstance(suggestion, str):
+                        clean_suggestions.append(suggestion)
+                    else:
+                        clean_suggestions.append(str(suggestion))
+                
+                # Filter out empty strings
+                clean_suggestions = [s for s in clean_suggestions if s and s.strip()]
+                
+                # Store suggestion context for next interaction
+                current_item_detected = suggestion_json.get("current_item", "")
+                # If current_item is empty, None, or generic, treat as no specific item
+                if not current_item_detected or current_item_detected.lower() in ["none", "not identified", "unknown", "n/a", "not specified", "general request"]:
+                    current_item_detected = ""
+                
+                session["pending_suggestion"] = {
+                    "current_item": current_item_detected,
+                    "item_type": suggestion_json.get("item_type", ""),
+                    "suggestions": clean_suggestions,
+                    "reasoning": suggestion_json.get("reasoning", "")
+                }
+                
+                understood = suggestion_json.get("understood_request", "your request")
+                suggestions = clean_suggestions
+                reasoning = suggestion_json.get("reasoning", "")
+                
+                response_msg = f"I understand you want to change {understood}."
+                if reasoning:
+                    response_msg += f" {reasoning}"
+                response_msg += " Here are some great alternatives:"
+                
+                return {
+                    "next_question": response_msg,
+                    "options": suggestions + ["Keep current plan", "Ask for different suggestions"]
+                }
+                
+            except Exception as e:
+                print(f"Suggestion generation error: {e}")
+                return {"next_question": "I'd love to help you with suggestions! Could you tell me more specifically what you'd like to change in your itinerary?"}
+        
+        # Handle user selection from suggestions
+        if session.get("pending_suggestion"):
+            pending = session["pending_suggestion"]
+            
+            if answer == "Keep current plan":
+                session["pending_suggestion"] = None
+                return {"next_question": "No problem! Your current plan remains unchanged. Anything else you'd like to update?", "options": ["Update Plan", "End Chat"]}
+            
+            elif answer == "Ask for different suggestions":
+                # Generate new suggestions of the same type
+                destination = cities[0].get("city_name", "Unknown")
+                item_type = pending.get("item_type", "activity")
+                
+                new_suggestion_prompt = f"""
+Generate 5 different {item_type} suggestions in {destination} that are completely different from these previous suggestions: {pending.get('suggestions', [])}
+
+Return JSON format:
+{{
+  "suggestions": ["New Place 1", "New Place 2", "New Place 3", "New Place 4", "New Place 5"]
+}}
+"""
+                try:
+                    new_resp = client.chat.completions.create(
+                        model=deployment_name,
+                        messages=[
+                            {"role": "system", "content": "You provide diverse travel suggestions."},
+                            {"role": "user", "content": new_suggestion_prompt}
+                        ],
+                        response_format={"type": "json_object"}
+                    )
+                    new_json = json.loads(new_resp.choices[0].message.content)
+                    new_suggestions = new_json.get("suggestions", [])
+                    
+                    # Update pending suggestions
+                    session["pending_suggestion"]["suggestions"] = new_suggestions
+                    
+                    return {
+                        "next_question": f"Here are some different {item_type} options for you:",
+                        "options": new_suggestions + ["Keep current plan", "Ask for different suggestions"]
+                    }
+                except:
+                    return {"next_question": "Let me know what specific type of place you're looking for and I'll suggest alternatives!"}
+            
+            elif answer in pending.get("suggestions", []):
+                selected_place = answer
+                current_item = pending.get("current_item", "")
+                item_type = pending.get("item_type", "")
+                destination = cities[0].get("city_name", "Unknown")
+                
+                print(f"DEBUG: current_item='{current_item}', item_type='{item_type}', selected_place='{selected_place}'")
+                
+                # Check if we have a specific item to replace
+                if current_item and current_item.strip():
+                    # Direct replacement - we know what to replace
+                    detail_prompt = f"""
+Find complete details for {selected_place} in {destination}:
+Return JSON: {{"name": "Official name", "address": "Complete address", "latitude": 0.0, "longitude": 0.0, "highlights": "Detailed description", "why_recommended": "Specific reasons", "carry": "Practical items", "rating": 4.5, "reviews": {{"Review 1": "text", "Review 2": "text"}}}}
+"""
+                    
+                    try:
+                        detail_resp = client.chat.completions.create(
+                            model=deployment_name,
+                            messages=[{"role": "system", "content": "Provide real travel information."}, {"role": "user", "content": detail_prompt}],
+                            response_format={"type": "json_object"}
+                        )
+                        detail_json = json.loads(detail_resp.choices[0].message.content)
+                        
+                        # Update activity preserving exact JSON structure
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                if current_item.lower() in activity.get("name", "").lower():
+                                    activity["name"] = detail_json.get("name", selected_place)
+                                    activity["address"] = detail_json.get("address", activity.get("address", "Address not available"))
+                                    activity["latitude"] = detail_json.get("latitude", activity.get("latitude", 0.0))
+                                    activity["longitude"] = detail_json.get("longitude", activity.get("longitude", 0.0))
+                                    if "highlights" in activity:
+                                        activity["highlights"] = detail_json.get("highlights", activity["highlights"])
+                                    if "why_recommended" in activity:
+                                        activity["why_recommended"] = detail_json.get("why_recommended", activity["why_recommended"])
+                                    if "carry" in activity:
+                                        activity["carry"] = detail_json.get("carry", activity["carry"])
+                                    if "rating" in activity:
+                                        activity["rating"] = detail_json.get("rating", activity["rating"])
+                                    if "reviews" in activity:
+                                        activity["reviews"] = detail_json.get("reviews", activity["reviews"])
+                                    break
+                    except:
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                if current_item.lower() in activity.get("name", "").lower():
+                                    activity["name"] = selected_place
+                                    break
+                    
+                    session["pending_suggestion"] = None
+                    session["result"] = current_result
+                    try:
+                        cosmos_helper.save_result(current_result)
+                    except Exception as e:
+                        print("Cosmos DB save error:", e)
+                    return {"done": True, "feedback": [f"Updated with {selected_place}!"], "result": current_result, "options": ["Update Plan", "End Chat"]}
+                
+                else:
+                    # No specific item to replace - need clarification
+                    session["pending_addition"] = {
+                        "selected_place": selected_place,
+                        "item_type": item_type
+                    }
+                    session["pending_suggestion"] = None
+                    
+                    # Generate comprehensive clarifying options
+                    if item_type in ["breakfast", "lunch", "dinner"]:
+                        # Show all meal options across all days
+                        meal_options = []
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                if activity.get("meal"):
+                                    meal_options.append(f"Replace {activity['name']} ({activity['meal']} on {day['day']})")
+                        
+                        return {
+                            "next_question": f"Where would you like to add {selected_place}?",
+                            "options": meal_options
+                        }
+                    
+                    else:
+                        # For activities, show all non-meal activities
+                        activity_options = []
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                if not activity.get("meal") and activity.get("action") not in ["Arrival", "Transfer", "Hotel Check-in", "Return to Hotel", "Hotel Check-out", "Departure"]:
+                                    activity_options.append(f"Replace {activity['name']} on {day['day']}")
+                        
+                        return {
+                            "next_question": f"Which activity would you like to replace with {selected_place}?",
+                            "options": activity_options
+                        }
+                
+        
+        else:
+            # Original intent parsing for direct commands
+            intent_prompt = f"""
 You are an intent parser for a travel itinerary assistant.
 The user said: "{answer}".
 Return a JSON object with a list of actions. Each action must be one of:
@@ -634,20 +1092,20 @@ Rules:
 - If no clear action, return {{ "actions": [] }}.
 Return valid JSON only.
 """
-        try:
-            intent_resp = client.chat.completions.create(
-                model=deployment_name,
-                messages=[
-                    {"role": "system", "content": "You are a precise intent-to-JSON parser."},
-                    {"role": "user", "content": intent_prompt}
-                ],
-                response_format={"type": "json_object"}
-            )
-            actions_json = json.loads(intent_resp.choices[0].message.content)
-            actions = actions_json.get("actions", [])
-        except Exception as e:
-            print("Intent parsing error:", e)
-            actions = []
+            try:
+                intent_resp = client.chat.completions.create(
+                    model=deployment_name,
+                    messages=[
+                        {"role": "system", "content": "You are a precise intent-to-JSON parser."},
+                        {"role": "user", "content": intent_prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
+                actions_json = json.loads(intent_resp.choices[0].message.content)
+                actions = actions_json.get("actions", [])
+            except Exception as e:
+                print("Intent parsing error:", e)
+                actions = []
 
         # --- Track removed positions and activities for replacements ---
         removed_positions = []
