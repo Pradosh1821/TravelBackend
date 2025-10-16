@@ -81,8 +81,12 @@ async def chat(user_input: UserInput):
     session = user_sessions[session_id]
     session["history"].append(answer)
     
+    # Handle end chat options
+    if session.get("result") and answer.lower() in ["looks good, proceed to booking", "save and arrange a call back"]:
+        return {"done": True, "message": "Thank you for using Easy Trip! Your itinerary is ready.", "result": session["result"]}
+    
     # Check if this is an update request for existing plan
-    if session.get("result") and answer.lower() not in ["update plan", "end chat"]:
+    if session.get("result") and answer.lower() not in ["i need more changes", "looks good, proceed to booking", "save and arrange a call back"]:
         # User has a plan and is making an update request - handle it directly
         current_result = session["result"]
         cities = current_result.get("cities", [])
@@ -100,53 +104,160 @@ async def chat(user_input: UserInput):
             if "Replace" in answer:
                 # Extract the place name from the answer (e.g., "Replace Island Style (Lunch on Day 2)" or "Replace Waikiki Beach on Day 1")
                 import re
-                match = re.search(r'Replace (.+?) (?:\(|on)', answer)
+                match = re.search(r'Replace (.+?)(?:\s*\(|\s*on|$)', answer)
                 target_place = match.group(1) if match else ""
                 
-                # Get comprehensive details for the selected place
-                detail_prompt = f"""
+                # Handle hotel replacement differently
+                if item_type == "hotel":
+                    # Get hotel details for the selected place
+                    hotel_detail_prompt = f"""
+Find complete hotel details for {selected_place} in {destination}:
+Return JSON: {{"name": "Official hotel name", "address": "Complete hotel address", "latitude": 0.0, "longitude": 0.0, "check_in": "03:00 PM", "check_out": "11:00 AM", "why_recommended": "Specific reasons why this hotel is recommended"}}
+"""
+                    
+                    try:
+                        hotel_detail_resp = client.chat.completions.create(
+                            model=deployment_name,
+                            messages=[{"role": "system", "content": "Provide real hotel information."}, {"role": "user", "content": hotel_detail_prompt}],
+                            response_format={"type": "json_object"}
+                        )
+                        hotel_detail_json = json.loads(hotel_detail_resp.choices[0].message.content)
+                    except:
+                        hotel_detail_json = {
+                            "name": selected_place, 
+                            "address": f"{selected_place} Address", 
+                            "latitude": 0.0, 
+                            "longitude": 0.0,
+                            "check_in": "03:00 PM",
+                            "check_out": "11:00 AM",
+                            "why_recommended": f"{selected_place} offers excellent accommodation."
+                        }
+                    
+                    # Replace hotel in the cities array
+                    if "cities" in current_result and current_result["cities"]:
+                        new_hotel_name = hotel_detail_json.get("name", selected_place)
+                        new_hotel_address = hotel_detail_json.get("address", f"{selected_place} Address")
+                        new_hotel_lat = hotel_detail_json.get("latitude", 0.0)
+                        new_hotel_lon = hotel_detail_json.get("longitude", 0.0)
+                        
+                        current_result["cities"][0]["hotel"] = {
+                            "name": new_hotel_name,
+                            "address": new_hotel_address,
+                            "latitude": new_hotel_lat,
+                            "longitude": new_hotel_lon,
+                            "check_in": hotel_detail_json.get("check_in", "03:00 PM"),
+                            "check_out": hotel_detail_json.get("check_out", "11:00 AM"),
+                            "why_recommended": hotel_detail_json.get("why_recommended", f"{selected_place} offers excellent accommodation.")
+                        }
+                        
+                        # Update all hotel-related activities throughout the itinerary
+                        for day in recommendations:
+                            for activity in day["activities"]:
+                                action = activity.get("action", "")
+                                name = activity.get("name", "")
+                                
+                                # Update Hotel Check-in activities
+                                if action == "Hotel Check-in" or "check-in" in name.lower():
+                                    activity["name"] = new_hotel_name
+                                    activity["address"] = new_hotel_address
+                                    activity["latitude"] = new_hotel_lat
+                                    activity["longitude"] = new_hotel_lon
+                                
+                                # Update Return to Hotel activities
+                                elif action == "Return to Hotel" or "return to hotel" in name.lower():
+                                    activity["name"] = new_hotel_name
+                                    activity["address"] = new_hotel_address
+                                    activity["latitude"] = new_hotel_lat
+                                    activity["longitude"] = new_hotel_lon
+                                
+                                # Update Hotel Check-out activities
+                                elif action == "Hotel Check-out" or "check-out" in name.lower():
+                                    activity["name"] = new_hotel_name
+                                    activity["address"] = new_hotel_address
+                                    activity["latitude"] = new_hotel_lat
+                                    activity["longitude"] = new_hotel_lon
+                                
+                                # Update Transfer activities that mention any hotel name
+                                elif action == "Transfer":
+                                    # Check if this transfer involves any hotel reference
+                                    old_hotel_names = ["Hilton Hawaiian Village", "Waikiki Beachcomber", "hotel"]
+                                    needs_update = any(old_name.lower() in name.lower() for old_name in old_hotel_names)
+                                    
+                                    if needs_update:
+                                        # Update transfer name to reflect new hotel
+                                        if "Airport to" in name:
+                                            activity["name"] = f"Transfer from Daniel K. Inouye International Airport to {new_hotel_name}"
+                                            activity["address"] = f"300 Rodgers Blvd, Honolulu, HI 96819, USA → {new_hotel_address}"
+                                        elif "to Airport" in name or "to Daniel" in name:
+                                            activity["name"] = f"Transfer from {new_hotel_name} to Daniel K. Inouye International Airport"
+                                            activity["address"] = f"{new_hotel_address} → 300 Rodgers Blvd, Honolulu, HI 96819, USA"
+                                        elif "to" in name.lower():
+                                            # Generic transfer to hotel
+                                            parts = name.split(" to ")
+                                            if len(parts) >= 2:
+                                                activity["name"] = f"{parts[0]} to {new_hotel_name}"
+                                        elif "from" in name.lower():
+                                            # Generic transfer from hotel
+                                            parts = name.split(" from ")
+                                            if len(parts) >= 2:
+                                                remaining = parts[1].split(" to ")
+                                                if len(remaining) >= 2:
+                                                    activity["name"] = f"Transfer from {new_hotel_name} to {remaining[1]}"
+                    
+                    session["pending_addition"] = None
+                    session["result"] = current_result
+                    try:
+                        cosmos_helper.save_result(current_result)
+                    except Exception as e:
+                        print("Cosmos DB save error:", e)
+                    return {"done": True, "feedback": [f"Perfect! Hotel changed to {selected_place}!"], "result": current_result, "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
+                
+                else:
+                    # Handle activity/meal replacement
+                    # Get comprehensive details for the selected place
+                    detail_prompt = f"""
 Find complete details for {selected_place} in {destination}:
 Return JSON: {{"name": "Official name", "address": "Complete address", "latitude": 0.0, "longitude": 0.0, "highlights": "Detailed description", "why_recommended": "Specific reasons", "carry": "Practical items", "rating": 4.5, "reviews": {{"Review 1": "text", "Review 2": "text"}}}}
 """
-                
-                try:
-                    detail_resp = client.chat.completions.create(
-                        model=deployment_name,
-                        messages=[{"role": "system", "content": "Provide real travel information."}, {"role": "user", "content": detail_prompt}],
-                        response_format={"type": "json_object"}
-                    )
-                    detail_json = json.loads(detail_resp.choices[0].message.content)
-                except:
-                    detail_json = {"name": selected_place, "highlights": f"{selected_place} offers great experience.", "why_recommended": f"{selected_place} is highly recommended."}
-                
-                # Find and replace the specific place mentioned in the answer
-                for day in recommendations:
-                    for activity in day["activities"]:
-                        if target_place and target_place.lower() in activity.get("name", "").lower():
-                            # Preserve exact JSON structure
-                            activity["name"] = detail_json.get("name", selected_place)
-                            activity["address"] = detail_json.get("address", activity.get("address", "Address not available"))
-                            activity["latitude"] = detail_json.get("latitude", activity.get("latitude", 0.0))
-                            activity["longitude"] = detail_json.get("longitude", activity.get("longitude", 0.0))
-                            if "highlights" in activity:
-                                activity["highlights"] = detail_json.get("highlights", activity["highlights"])
-                            if "why_recommended" in activity:
-                                activity["why_recommended"] = detail_json.get("why_recommended", activity["why_recommended"])
-                            if "carry" in activity:
-                                activity["carry"] = detail_json.get("carry", activity["carry"])
-                            if "rating" in activity:
-                                activity["rating"] = detail_json.get("rating", activity["rating"])
-                            if "reviews" in activity:
-                                activity["reviews"] = detail_json.get("reviews", activity["reviews"])
-                            break
-                
-                session["pending_addition"] = None
-                session["result"] = current_result
-                try:
-                    cosmos_helper.save_result(current_result)
-                except Exception as e:
-                    print("Cosmos DB save error:", e)
-                return {"done": True, "feedback": [f"Perfect! Replaced with {selected_place}!"], "result": current_result, "options": ["Update Plan", "End Chat"]}
+                    
+                    try:
+                        detail_resp = client.chat.completions.create(
+                            model=deployment_name,
+                            messages=[{"role": "system", "content": "Provide real travel information."}, {"role": "user", "content": detail_prompt}],
+                            response_format={"type": "json_object"}
+                        )
+                        detail_json = json.loads(detail_resp.choices[0].message.content)
+                    except:
+                        detail_json = {"name": selected_place, "highlights": f"{selected_place} offers great experience.", "why_recommended": f"{selected_place} is highly recommended."}
+                    
+                    # Find and replace the specific place mentioned in the answer
+                    for day in recommendations:
+                        for activity in day["activities"]:
+                            if target_place and target_place.lower() in activity.get("name", "").lower():
+                                # Preserve exact JSON structure
+                                activity["name"] = detail_json.get("name", selected_place)
+                                activity["address"] = detail_json.get("address", activity.get("address", "Address not available"))
+                                activity["latitude"] = detail_json.get("latitude", activity.get("latitude", 0.0))
+                                activity["longitude"] = detail_json.get("longitude", activity.get("longitude", 0.0))
+                                if "highlights" in activity:
+                                    activity["highlights"] = detail_json.get("highlights", activity["highlights"])
+                                if "why_recommended" in activity:
+                                    activity["why_recommended"] = detail_json.get("why_recommended", activity["why_recommended"])
+                                if "carry" in activity:
+                                    activity["carry"] = detail_json.get("carry", activity["carry"])
+                                if "rating" in activity:
+                                    activity["rating"] = detail_json.get("rating", activity["rating"])
+                                if "reviews" in activity:
+                                    activity["reviews"] = detail_json.get("reviews", activity["reviews"])
+                                break
+                    
+                    session["pending_addition"] = None
+                    session["result"] = current_result
+                    try:
+                        cosmos_helper.save_result(current_result)
+                    except Exception as e:
+                        print("Cosmos DB save error:", e)
+                    return {"done": True, "feedback": [f"Perfect! Replaced with {selected_place}!"], "result": current_result, "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
         
         # Check if user wants suggestions
         suggestion_keywords = ["suggest", "recommend", "alternative", "instead", "different", "other", "replace", "change", "don't want", "not interested", "skip", "avoid", "hate", "dislike", "add some", "add other", "add another"]
@@ -161,14 +272,16 @@ Current itinerary: {json.dumps(recommendations, indent=2)}
 Analyze the user's request:
 1. If they mention a SPECIFIC place from the itinerary to replace (like "replace Hau Tree Lanai" or "instead of Eggs 'n Things"), put that exact place name in current_item
 2. If they make a GENERAL request (like "add mexican restaurant", "add some activity", "suggest breakfast place"), leave current_item as empty string
-3. IMPORTANT: Determine if this is food-related or activity-related:
+3. IMPORTANT: Determine if this is food-related, activity-related, or hotel-related:
    - FOOD keywords: restaurant, food, eat, dining, meal, breakfast, lunch, dinner, cuisine, vegetarian, vegan, cafe, bar, snack
    - ACTIVITY keywords: activity, attraction, sightseeing, tour, museum, beach, park, shopping, adventure
+   - HOTEL keywords: hotel, accommodation, stay, resort, lodge, inn, different hotel, another hotel, other hotel, new hotel
 4. For FOOD requests: item_type should be "breakfast", "lunch", or "dinner" (choose the most appropriate meal time)
 5. For ACTIVITY requests: item_type should be "activity"
-6. Provide 5 real place suggestions
+6. For HOTEL requests: item_type MUST be "hotel" (if user mentions hotel, accommodation, stay, resort, etc.)
+7. Provide 5 real place suggestions
 
-Return JSON: {{"understood_request": "what user wants", "current_item": "exact place name from itinerary OR empty string", "item_type": "breakfast/lunch/dinner/activity", "suggestions": ["Place1", "Place2", "Place3", "Place4", "Place5"], "reasoning": "why these fit"}}
+Return JSON: {{"understood_request": "what user wants", "current_item": "exact place name from itinerary OR empty string", "item_type": "breakfast/lunch/dinner/activity/hotel", "suggestions": ["Place1", "Place2", "Place3", "Place4", "Place5"], "reasoning": "why these fit"}}
 """
             
             try:
@@ -187,7 +300,7 @@ Return JSON: {{"understood_request": "what user wants", "current_item": "exact p
                 suggestions = suggestion_json.get("suggestions", [])
                 
                 return {
-                    "next_question": f"I understand you want to change {understood}. Here are some great alternatives:",
+                    "next_question": f"{understood}. Here are some great alternatives:",
                     "options": suggestions + ["Keep current plan"]
                 }
             except:
@@ -198,7 +311,7 @@ Return JSON: {{"understood_request": "what user wants", "current_item": "exact p
             pending = session["pending_suggestion"]
             if answer == "Keep current plan":
                 session["pending_suggestion"] = None
-                return {"next_question": "Your plan remains unchanged. Anything else?", "options": ["Update Plan", "End Chat"]}
+                return {"next_question": "Your plan remains unchanged. Anything else?", "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
             elif answer in pending.get("suggestions", []):
                 selected_place = answer
                 current_item = pending.get("current_item", "")
@@ -254,7 +367,7 @@ Return JSON: {{"name": "Official name", "address": "Complete address", "latitude
                         cosmos_helper.save_result(current_result)
                     except Exception as e:
                         print("Cosmos DB save error:", e)
-                    return {"done": True, "feedback": [f"Updated with {selected_place}!"], "result": current_result, "options": ["Update Plan", "End Chat"]}
+                    return {"done": True, "feedback": [f"Updated with {selected_place}!"], "result": current_result, "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
                 
                 else:
                     # No specific item to replace - need clarification
@@ -264,8 +377,15 @@ Return JSON: {{"name": "Official name", "address": "Complete address", "latitude
                     }
                     session["pending_suggestion"] = None
                     
-                    # Generate comprehensive clarifying options
-                    if item_type in ["breakfast", "lunch", "dinner"]:
+                    # Generate comprehensive clarifying options - HOTEL FIRST
+                    if item_type == "hotel":
+                        # For hotels, show hotel replacement option
+                        hotel_name = current_result.get("cities", [{}])[0].get("hotel", {}).get("name", "Current Hotel")
+                        return {
+                            "next_question": f"Which hotel would you like to replace with {selected_place}?",
+                            "options": [f"Replace {hotel_name}"]
+                        }
+                    elif item_type in ["breakfast", "lunch", "dinner"]:
                         # Show all meal options across all days
                         meal_options = []
                         for day in recommendations:
@@ -784,7 +904,7 @@ Rules:
                                 
                                 if action == "Transfer" or "transfer" in name.lower():
                                     summary["counts"]["transfers"] += 1
-                                elif "meal" in activity:
+                                elif activity.get("meal") or action in ["Breakfast", "Lunch", "Dinner"]:
                                     summary["counts"]["meals"] += 1
                                 elif action not in ["Arrival", "Hotel Check-in", "Return to Hotel", "Hotel Check-out", "Departure"]:
                                     summary["counts"]["activities"] += 1
@@ -798,7 +918,7 @@ Rules:
         except Exception as e:
             print("Cosmos DB error:", e)
 
-        return {"done": True, "feedback": [], "result": final_result, "options": ["Update Plan", "End Chat"]}
+        return {"done": True, "feedback": [], "result": final_result, "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
 
     # ✅ Ask Another Question (legacy support)
     if user_choice in ["2", "ask another", "ask another question", "add more preferences", "preferences", "more preferences"]:
@@ -824,7 +944,11 @@ Make it conversational and friendly.
 
 
     # ✅ Step 5: Updates after plan is generated (fallback for complex updates)
-    if session.get("result") and answer.lower() == "update plan":
+    if session.get("result") and answer.lower() == "i need more changes":
+        return {"next_question": "Alright, what would you like to change in your itinerary?"}
+    
+    # Handle the actual update request after user enters text
+    if session.get("result") and answer.lower() not in ["i need more changes", "looks good, proceed to booking", "save and arrange a call back"]:
         current_result = session["result"]
         updated = False
         feedback_msgs = []
@@ -849,8 +973,41 @@ Make it conversational and friendly.
             # Get destination from current itinerary
             destination = cities[0].get("city_name", "Unknown")
             
-            # Enhanced AI analysis of user request
-            suggestion_prompt = f"""
+            # Force hotel detection for hotel-related requests
+            hotel_keywords = ["hotel", "accommodation", "stay", "resort", "lodge", "inn", "different hotel", "another hotel", "other hotel", "new hotel", "prefer"]
+            is_hotel_request = any(keyword in answer.lower() for keyword in hotel_keywords)
+            
+            # Force food detection for food-related requests
+            food_keywords = ["food", "restaurant", "eat", "dining", "meal", "breakfast", "lunch", "dinner", "cuisine", "vegetarian", "vegan", "cafe", "bar", "snack", "indian", "chinese", "italian", "mexican", "thai", "japanese"]
+            is_food_request = any(keyword in answer.lower() for keyword in food_keywords)
+            
+            if is_hotel_request:
+                # Force hotel suggestions
+                suggestion_json = {
+                    "understood_request": "suggest a different hotel",
+                    "current_item": "",
+                    "item_type": "hotel",
+                    "suggestions": ["The Ritz-Carlton Residences, Waikiki Beach", "Moana Surfrider, A Westin Resort & Spa", "Outrigger Waikiki Beach Resort", "Sheraton Waikiki", "Grand Hyatt Kauai Resort & Spa"],
+                    "reasoning": "These are premium hotels in the destination area"
+                }
+            elif is_food_request:
+                # Force food suggestions with proper meal classification
+                meal_type = "dinner"  # Default to dinner
+                if "breakfast" in answer.lower():
+                    meal_type = "breakfast"
+                elif "lunch" in answer.lower():
+                    meal_type = "lunch"
+                
+                suggestion_json = {
+                    "understood_request": "suggest food places",
+                    "current_item": "",
+                    "item_type": meal_type,
+                    "suggestions": ["The Spice Route", "Mala Cuisine", "Curry Up Now", "Indo Asian Street Eatery", "Shalimar"],
+                    "reasoning": "These are great restaurants in the destination area"
+                }
+            else:
+                # Enhanced AI analysis of user request
+                suggestion_prompt = f"""
 User request: "{answer}"
 Destination: {destination}
 Current itinerary: {json.dumps(recommendations, indent=2)}
@@ -922,11 +1079,13 @@ Return JSON format:
                     "reasoning": suggestion_json.get("reasoning", "")
                 }
                 
+                print(f"DEBUG SUGGESTION: item_type='{suggestion_json.get('item_type', '')}', understood='{suggestion_json.get('understood_request', '')}'")
+                
                 understood = suggestion_json.get("understood_request", "your request")
                 suggestions = clean_suggestions
                 reasoning = suggestion_json.get("reasoning", "")
                 
-                response_msg = f"I understand you want to change {understood}."
+                response_msg = f"{understood}."
                 if reasoning:
                     response_msg += f" {reasoning}"
                 response_msg += " Here are some great alternatives:"
@@ -946,7 +1105,7 @@ Return JSON format:
             
             if answer == "Keep current plan":
                 session["pending_suggestion"] = None
-                return {"next_question": "No problem! Your current plan remains unchanged. Anything else you'd like to update?", "options": ["Update Plan", "End Chat"]}
+                return {"next_question": "No problem! Your current plan remains unchanged. Anything else you'd like to update?", "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
             
             elif answer == "Ask for different suggestions":
                 # Generate new suggestions of the same type
@@ -989,7 +1148,8 @@ Return JSON format:
                 item_type = pending.get("item_type", "")
                 destination = cities[0].get("city_name", "Unknown")
                 
-                print(f"DEBUG: current_item='{current_item}', item_type='{item_type}', selected_place='{selected_place}'")
+                print(f"DEBUG SELECTION: current_item='{current_item}', item_type='{item_type}', selected_place='{selected_place}'")
+                print(f"DEBUG HOTEL CHECK: item_type == 'hotel': {item_type == 'hotel'}")
                 
                 # Check if we have a specific item to replace
                 if current_item and current_item.strip():
@@ -1039,7 +1199,7 @@ Return JSON: {{"name": "Official name", "address": "Complete address", "latitude
                         cosmos_helper.save_result(current_result)
                     except Exception as e:
                         print("Cosmos DB save error:", e)
-                    return {"done": True, "feedback": [f"Updated with {selected_place}!"], "result": current_result, "options": ["Update Plan", "End Chat"]}
+                    return {"done": True, "feedback": [f"Updated with {selected_place}!"], "result": current_result, "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
                 
                 else:
                     # No specific item to replace - need clarification
@@ -1049,8 +1209,17 @@ Return JSON: {{"name": "Official name", "address": "Complete address", "latitude
                     }
                     session["pending_suggestion"] = None
                     
-                    # Generate comprehensive clarifying options
-                    if item_type in ["breakfast", "lunch", "dinner"]:
+                    # Generate comprehensive clarifying options - HOTEL FIRST
+                    print(f"DEBUG CLARIFICATION: item_type='{item_type}', checking hotel condition")
+                    if item_type == "hotel":
+                        # For hotels, show hotel replacement option
+                        hotel_name = current_result.get("cities", [{}])[0].get("hotel", {}).get("name", "Current Hotel")
+                        print(f"DEBUG HOTEL CLARIFICATION: hotel_name='{hotel_name}'")
+                        return {
+                            "next_question": f"Which hotel would you like to replace with {selected_place}?",
+                            "options": [f"Replace {hotel_name}"]
+                        }
+                    elif item_type in ["breakfast", "lunch", "dinner"]:
                         # Show all meal options across all days
                         meal_options = []
                         for day in recommendations:
@@ -1058,9 +1227,17 @@ Return JSON: {{"name": "Official name", "address": "Complete address", "latitude
                                 if activity.get("meal"):
                                     meal_options.append(f"Replace {activity['name']} ({activity['meal']} on {day['day']})")
                         
+                        # If no meals found with meal field, look for food-related activities
+                        if not meal_options:
+                            for day in recommendations:
+                                for activity in day["activities"]:
+                                    name = activity.get("name", "").lower()
+                                    if any(food_word in name for food_word in ["restaurant", "cafe", "bar", "grill", "kitchen", "diner", "eatery", "food", "brunch", "breakfast", "lunch", "dinner"]):
+                                        meal_options.append(f"Replace {activity['name']} on {day['day']}")
+                        
                         return {
-                            "next_question": f"Where would you like to add {selected_place}?",
-                            "options": meal_options
+                            "next_question": f"Which meal would you like to replace with {selected_place}?",
+                            "options": meal_options if meal_options else [f"Add {selected_place} as new meal option"]
                         }
                     
                     else:
@@ -1380,7 +1557,7 @@ Return JSON: {{"distance": "X km", "time": "X mins by taxi"}}
                                     
                                     if action == "Transfer" or "transfer" in name.lower():
                                         summary["counts"]["transfers"] += 1
-                                    elif "meal" in activity:
+                                    elif activity.get("meal") or action in ["Breakfast", "Lunch", "Dinner"]:
                                         summary["counts"]["meals"] += 1
                                     elif action not in ["Arrival", "Hotel Check-in", "Return to Hotel", "Hotel Check-out", "Departure"]:
                                         summary["counts"]["activities"] += 1
@@ -1391,6 +1568,6 @@ Return JSON: {{"distance": "X km", "time": "X mins by taxi"}}
                 cosmos_helper.save_result(current_result)
             except Exception as e:
                 print("Cosmos DB save error:", e)
-            return {"done": True, "feedback": feedback_msgs, "result": current_result, "options": ["Update Plan", "End Chat"]}
+            return {"done": True, "feedback": feedback_msgs, "result": current_result, "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
         else:
             return {"next_question": "I couldn't understand your request. Could you rephrase what to update in your plan?"}
