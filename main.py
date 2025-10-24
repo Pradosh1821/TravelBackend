@@ -60,30 +60,44 @@ async def chat(user_input: UserInput):
             "asked_another": False,
             "result": None,
             "step": "initial",
-            "travel_plan": None,
-            "trip_mood": None,
-            "activity_level": None,
-            "experience": None,
+            "travel_vibe": None,
+            "destination_choice": None,
             "origin": None,
+            "destination": None,
+            "scene_preferences": [],
+            "trip_goals": [],
+            "suggested_destinations": [],
+            "movie_description": None,
+            "accommodation_type": None,
             "waiting_for_answer": False,
             "pending_suggestion": None
         }
         greeting = (
-            "Hello!\n"
-            "Welcome to Easy Trip. I am Laura your personal travel assistant.\n"
-            "How can I help you today?"
+            "Hey there! Ready to plan your next adventure?\n"
+            "I'm your travel buddy, here to help you find the perfect trip. Just a few quick questions and we'll get you moving!"
         )
         return {
             "next_question": greeting,
-            "options": ["Build a Travel Itinerary", "Get help with Destinations", "Contact Support"]
+            "options": ["Explore Destinations", "Plan a Trip", "Travel Deals", "Track my bookings", "Report an Issue"]
         }
 
     session = user_sessions[session_id]
     session["history"].append(answer)
     
-    # Handle end chat options
+    # Handle end chat options first
     if session.get("result") and answer.lower() in ["looks good, proceed to booking", "save and arrange a call back"]:
+        session["show_followup"] = False
         return {"done": True, "message": "Thank you for using Easy Trip! Your itinerary is ready.", "result": session["result"]}
+    
+    # Handle "I Need more changes" option
+    if session.get("result") and answer.lower() == "i need more changes":
+        session["show_followup"] = False
+        return {"next_question": "What would you like to change in your itinerary?"}
+    
+    # Check if we need to show follow-up question after result display
+    if session.get("show_followup"):
+        session["show_followup"] = False
+        return {"next_question": "Ready to take off or still tweaking the route?", "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
     
     # Check if this is an update request for existing plan
     if session.get("result") and answer.lower() not in ["i need more changes", "looks good, proceed to booking", "save and arrange a call back"]:
@@ -140,6 +154,9 @@ Return JSON: {{"name": "Official hotel name", "address": "Complete hotel address
                         new_hotel_lat = hotel_detail_json.get("latitude", 0.0)
                         new_hotel_lon = hotel_detail_json.get("longitude", 0.0)
                         
+                        # Get old hotel name BEFORE replacing it
+                        old_hotel_name = current_result["cities"][0].get("hotel", {}).get("name", "")
+                        
                         current_result["cities"][0]["hotel"] = {
                             "name": new_hotel_name,
                             "address": new_hotel_address,
@@ -151,58 +168,53 @@ Return JSON: {{"name": "Official hotel name", "address": "Complete hotel address
                         }
                         
                         # Update all hotel-related activities throughout the itinerary
+                        
                         for day in recommendations:
                             for activity in day["activities"]:
                                 action = activity.get("action", "")
                                 name = activity.get("name", "")
                                 
                                 # Update Hotel Check-in activities
-                                if action == "Hotel Check-in" or "check-in" in name.lower():
-                                    activity["name"] = new_hotel_name
-                                    activity["address"] = new_hotel_address
-                                    activity["latitude"] = new_hotel_lat
-                                    activity["longitude"] = new_hotel_lon
-                                
-                                # Update Return to Hotel activities
-                                elif action == "Return to Hotel" or "return to hotel" in name.lower():
+                                if action == "Hotel Check-in":
                                     activity["name"] = new_hotel_name
                                     activity["address"] = new_hotel_address
                                     activity["latitude"] = new_hotel_lat
                                     activity["longitude"] = new_hotel_lon
                                 
                                 # Update Hotel Check-out activities
-                                elif action == "Hotel Check-out" or "check-out" in name.lower():
+                                elif action == "Hotel Check-out":
                                     activity["name"] = new_hotel_name
                                     activity["address"] = new_hotel_address
                                     activity["latitude"] = new_hotel_lat
                                     activity["longitude"] = new_hotel_lon
                                 
-                                # Update Transfer activities that mention any hotel name
+                                # Update Return to Hotel activities
+                                elif action == "Return to Hotel":
+                                    activity["name"] = new_hotel_name
+                                    activity["address"] = new_hotel_address
+                                    activity["latitude"] = new_hotel_lat
+                                    activity["longitude"] = new_hotel_lon
+                                
+                                # Update Transfer activities
                                 elif action == "Transfer":
-                                    # Check if this transfer involves any hotel reference
-                                    old_hotel_names = ["Hilton Hawaiian Village", "Waikiki Beachcomber", "hotel"]
-                                    needs_update = any(old_name.lower() in name.lower() for old_name in old_hotel_names)
-                                    
-                                    if needs_update:
-                                        # Update transfer name to reflect new hotel
-                                        if "Airport to" in name:
-                                            activity["name"] = f"Transfer from Daniel K. Inouye International Airport to {new_hotel_name}"
-                                            activity["address"] = f"300 Rodgers Blvd, Honolulu, HI 96819, USA → {new_hotel_address}"
-                                        elif "to Airport" in name or "to Daniel" in name:
-                                            activity["name"] = f"Transfer from {new_hotel_name} to Daniel K. Inouye International Airport"
-                                            activity["address"] = f"{new_hotel_address} → 300 Rodgers Blvd, Honolulu, HI 96819, USA"
-                                        elif "to" in name.lower():
-                                            # Generic transfer to hotel
-                                            parts = name.split(" to ")
-                                            if len(parts) >= 2:
-                                                activity["name"] = f"{parts[0]} to {new_hotel_name}"
-                                        elif "from" in name.lower():
-                                            # Generic transfer from hotel
-                                            parts = name.split(" from ")
-                                            if len(parts) >= 2:
-                                                remaining = parts[1].split(" to ")
-                                                if len(remaining) >= 2:
-                                                    activity["name"] = f"Transfer from {new_hotel_name} to {remaining[1]}"
+                                    if "to" in name.lower() and (old_hotel_name.lower() in name.lower() or "hotel" in name.lower()):
+                                        # Transfer to hotel
+                                        activity["name"] = f"Transfer from {activity['name'].split(' to ')[0].replace('Transfer from ', '')} to {new_hotel_name}"
+                                        activity["address"] = new_hotel_address
+                                        activity["latitude"] = new_hotel_lat
+                                        activity["longitude"] = new_hotel_lon
+                                    elif "from" in name.lower() and (old_hotel_name.lower() in name.lower() or "hotel" in name.lower()):
+                                        # Transfer from hotel
+                                        destination_part = activity['name'].split(' to ')[1] if ' to ' in activity['name'] else "Airport"
+                                        activity["name"] = f"Transfer from {new_hotel_name} to {destination_part}"
+                                
+                                # Update any activity that references the old hotel name
+                                elif old_hotel_name and old_hotel_name.lower() in name.lower():
+                                    activity["name"] = name.replace(old_hotel_name, new_hotel_name)
+                                    if "address" in activity and old_hotel_name.lower() in activity["address"].lower():
+                                        activity["address"] = new_hotel_address
+                                        activity["latitude"] = new_hotel_lat
+                                        activity["longitude"] = new_hotel_lon
                     
                     session["pending_addition"] = None
                     session["result"] = current_result
@@ -379,12 +391,107 @@ Return JSON: {{"name": "Official name", "address": "Complete address", "latitude
                     
                     # Generate comprehensive clarifying options - HOTEL FIRST
                     if item_type == "hotel":
-                        # For hotels, show hotel replacement option
-                        hotel_name = current_result.get("cities", [{}])[0].get("hotel", {}).get("name", "Current Hotel")
-                        return {
-                            "next_question": f"Which hotel would you like to replace with {selected_place}?",
-                            "options": [f"Replace {hotel_name}"]
-                        }
+                        # For hotels, directly replace without asking for clarification
+                        hotel_detail_prompt = f"""
+Find complete hotel details for {selected_place} in {destination}:
+Return JSON: {{"name": "Official hotel name", "address": "Complete hotel address", "latitude": 0.0, "longitude": 0.0, "check_in": "03:00 PM", "check_out": "11:00 AM", "why_recommended": "Specific reasons why this hotel is recommended"}}
+"""
+                        
+                        try:
+                            hotel_detail_resp = client.chat.completions.create(
+                                model=deployment_name,
+                                messages=[{"role": "system", "content": "Provide real hotel information."}, {"role": "user", "content": hotel_detail_prompt}],
+                                response_format={"type": "json_object"}
+                            )
+                            hotel_detail_json = json.loads(hotel_detail_resp.choices[0].message.content)
+                        except:
+                            hotel_detail_json = {
+                                "name": selected_place, 
+                                "address": f"{selected_place} Address", 
+                                "latitude": 0.0, 
+                                "longitude": 0.0,
+                                "check_in": "03:00 PM",
+                                "check_out": "11:00 AM",
+                                "why_recommended": f"{selected_place} offers excellent accommodation."
+                            }
+                        
+                        # Replace hotel in the cities array
+                        if "cities" in current_result and current_result["cities"]:
+                            # Get old hotel name BEFORE replacing it
+                            old_hotel_name = current_result["cities"][0].get("hotel", {}).get("name", "")
+                            
+                            new_hotel_name = hotel_detail_json.get("name", selected_place)
+                            new_hotel_address = hotel_detail_json.get("address", f"{selected_place} Address")
+                            new_hotel_lat = hotel_detail_json.get("latitude", 0.0)
+                            new_hotel_lon = hotel_detail_json.get("longitude", 0.0)
+                            
+                            current_result["cities"][0]["hotel"] = {
+                                "name": new_hotel_name,
+                                "address": new_hotel_address,
+                                "latitude": new_hotel_lat,
+                                "longitude": new_hotel_lon,
+                                "check_in": hotel_detail_json.get("check_in", "03:00 PM"),
+                                "check_out": hotel_detail_json.get("check_out", "11:00 AM"),
+                                "why_recommended": hotel_detail_json.get("why_recommended", f"{selected_place} offers excellent accommodation.")
+                            }
+                            
+                            # Update all hotel-related activities throughout the itinerary
+                            for day in recommendations:
+                                for activity in day["activities"]:
+                                    action = activity.get("action", "")
+                                    name = activity.get("name", "")
+                                    
+                                    # Update Hotel Check-in activities
+                                    if action == "Hotel Check-in":
+                                        activity["name"] = new_hotel_name
+                                        activity["address"] = new_hotel_address
+                                        activity["latitude"] = new_hotel_lat
+                                        activity["longitude"] = new_hotel_lon
+                                    
+                                    # Update Hotel Check-out activities
+                                    elif action == "Hotel Check-out":
+                                        activity["name"] = new_hotel_name
+                                        activity["address"] = new_hotel_address
+                                        activity["latitude"] = new_hotel_lat
+                                        activity["longitude"] = new_hotel_lon
+                                    
+                                    # Update Return to Hotel activities
+                                    elif action == "Return to Hotel":
+                                        activity["name"] = new_hotel_name
+                                        activity["address"] = new_hotel_address
+                                        activity["latitude"] = new_hotel_lat
+                                        activity["longitude"] = new_hotel_lon
+                                    
+                                    # Update Transfer activities
+                                    elif action == "Transfer":
+                                        if "to" in name.lower() and (old_hotel_name.lower() in name.lower() or "hotel" in name.lower()):
+                                            # Transfer to hotel
+                                            from_part = name.split(" to ")[0].replace("Transfer from ", "")
+                                            activity["name"] = f"Transfer from {from_part} to {new_hotel_name}"
+                                            activity["address"] = f"{activity.get('address', '').split(' → ')[0]} → {new_hotel_address}" if " → " in activity.get('address', '') else new_hotel_address
+                                            activity["latitude"] = new_hotel_lat
+                                            activity["longitude"] = new_hotel_lon
+                                        elif "from" in name.lower() and (old_hotel_name.lower() in name.lower() or "hotel" in name.lower()):
+                                            # Transfer from hotel
+                                            to_part = name.split(" to ")[1] if " to " in name else "Airport"
+                                            activity["name"] = f"Transfer from {new_hotel_name} to {to_part}"
+                                            activity["address"] = f"{new_hotel_address} → {activity.get('address', '').split(' → ')[1]}" if " → " in activity.get('address', '') else f"{new_hotel_address} → {to_part}"
+                                    
+                                    # Update any activity that references the old hotel name
+                                    elif old_hotel_name and old_hotel_name.lower() in name.lower():
+                                        activity["name"] = name.replace(old_hotel_name, new_hotel_name)
+                                        if "address" in activity and old_hotel_name.lower() in activity["address"].lower():
+                                            activity["address"] = new_hotel_address
+                                            activity["latitude"] = new_hotel_lat
+                                            activity["longitude"] = new_hotel_lon
+                        
+                        session["pending_addition"] = None
+                        session["result"] = current_result
+                        try:
+                            cosmos_helper.save_result(current_result)
+                        except Exception as e:
+                            print("Cosmos DB save error:", e)
+                        return {"done": True, "feedback": [f"Perfect! Hotel changed to {selected_place}!"], "result": current_result, "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
                     elif item_type in ["breakfast", "lunch", "dinner"]:
                         # Show all meal options across all days
                         meal_options = []
@@ -417,33 +524,39 @@ Return JSON: {{"name": "Official name", "address": "Complete address", "latitude
 
     # Step 2: Handle option selection
     if session["mode"] is None:
-        if "itinerary" in answer.lower():
-            session["mode"] = "itinerary"
-            session["step"] = "travel_plan"
+        if "plan a trip" in answer.lower():
+            session["mode"] = "plan_trip"
+            session["step"] = "travel_vibe"
             return {
-                "next_question": "Sound Great! Lets get started. Which travel plan are you going with?",
-                "options": ["Boys Trip", "Solo Adventure", "Family Getaway", "Girls Vacation"]
+                "next_question": "First things first, What's your travel vibe? Solo or traveling with company?",
+                "options": ["Bro-cation", "Queens on Tour", "Love Escape", "Work & Wander", "Bonding Break", "Freedom Trip"]
             }
-        elif "destination" in answer.lower():
+        elif "explore destinations" in answer.lower():
             session["mode"] = "destinations"
             return {"next_question": "Sure! Tell me which destinations you're interested in and I can share details."}
-        elif "support" in answer.lower():
+        elif "travel deals" in answer.lower():
+            session["mode"] = "deals"
+            return {"next_question": "Great! I'll help you find the best travel deals. What type of deals are you looking for?"}
+        elif "track my bookings" in answer.lower():
+            session["mode"] = "tracking"
+            return {"next_question": "I'll help you track your bookings. Please provide your booking reference number."}
+        elif "report an issue" in answer.lower():
             session["mode"] = "support"
-            return {"next_question": "Okay, connecting you to support. Please describe your issue."}
+            return {"next_question": "I'm here to help! Please describe the issue you're experiencing."}
         else:
-            return {"next_question": "Please choose 1, 2, or 3 from the options."}
+            return {"next_question": "Please select one of the available options."}
 
     # New conversation flow
-    if session["step"] == "travel_plan":
-        session["travel_plan"] = answer
-        session["step"] = "trip_mood"
+    if session["step"] == "travel_vibe":
+        session["travel_vibe"] = answer
+        session["step"] = "scene_preferences"
         # Generate dynamic response
         try:
             response_resp = client.chat.completions.create(
                 model=deployment_name,
                 messages=[
                     {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
-                    {"role": "user", "content": f"User selected '{answer}' as their travel plan. Generate one enthusiastic sentence acknowledging this choice."}
+                    {"role": "user", "content": f"User selected '{answer}' as their travel vibe. Generate one enthusiastic sentence acknowledging this choice."}
                 ]
             )
             dynamic_response = response_resp.choices[0].message.content.strip()
@@ -451,135 +564,267 @@ Return JSON: {{"name": "Official name", "address": "Complete address", "latitude
             dynamic_response = f"Awesome! {answer} sounds amazing!"
         
         return {
-            "next_question": f"{dynamic_response} What's your trip mood like?",
-            "options": ["Beach Getaway", "Into the mountains", "Party Goers"]
+            "next_question": "Tap everything that gets your heart racing or your soul relaxing. I'll craft a trip that fits your vibe perfectly!\nYour Kind of Scene (select multiple with commas like 1,2,8):",
+            "options": ["🏖️ Beach", "🏔️ Mountains", "🏙️ City Life", "🌲 Nature & Forests", "🏜️ Desert", "❄️ Snow & Ski", "🏛️ Historical Sites", "Continue"]
         }
     
-    elif session["step"] == "trip_mood":
-        session["trip_mood"] = answer
-        session["step"] = "activity_level"
-        # Generate dynamic response
-        try:
-            response_resp = client.chat.completions.create(
-                model=deployment_name,
-                messages=[
-                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
-                    {"role": "user", "content": f"User selected '{answer}' as their trip mood. Generate one enthusiastic sentence acknowledging this choice."}
-                ]
-            )
-            dynamic_response = response_resp.choices[0].message.content.strip()
-        except:
-            dynamic_response = f"Perfect! {answer} is going to be incredible!"
-        
-        return {
-            "next_question": f"{dynamic_response} How active you want your trip to be?",
-            "options": ["Relaxed", "Moderate", "Packed Itinerary"]
-        }
-    
-    elif session["step"] == "activity_level":
-        session["activity_level"] = answer
-        session["step"] = "experience"
-        # Generate dynamic response and experience options
-        try:
-            response_resp = client.chat.completions.create(
-                model=deployment_name,
-                messages=[
-                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
-                    {"role": "user", "content": f"User selected '{answer}' activity level. Generate one enthusiastic sentence acknowledging this choice."}
-                ]
-            )
-            dynamic_response = response_resp.choices[0].message.content.strip()
+    elif session["step"] == "destination_choice":
+        session["destination_choice"] = answer
+        if "yes, i have one in mind" in answer.lower():
+            session["step"] = "manual_destination"
+            return {
+                "next_question": "Perfect! What's your starting point and where are you headed?"
+            }
+        else:  # No, please suggest one
+            session["step"] = "ai_destination"
+            # Generate US destinations
+            try:
+                dest_resp = client.chat.completions.create(
+                    model=deployment_name,
+                    messages=[
+                        {"role": "system", "content": "You are a travel assistant. Suggest only destinations within the United States."},
+                        {"role": "user", "content": f"Based on travel vibe '{session['travel_vibe']}', suggest 5 popular US destinations. Return only destination names."}
+                    ]
+                )
+                destinations_text = dest_resp.choices[0].message.content.strip()
+                # Extract destinations from response and remove any numbering
+                destinations = []
+                for dest in destinations_text.split('\n'):
+                    if dest.strip():
+                        # Remove various numbering formats: "1. ", "1) ", "- ", "• ", etc.
+                        clean_dest = dest.strip()
+                        clean_dest = re.sub(r'^\d+\.\s*', '', clean_dest)  # Remove "1. "
+                        clean_dest = re.sub(r'^\d+\)\s*', '', clean_dest)   # Remove "1) "
+                        clean_dest = clean_dest.replace('- ', '').replace('• ', '')  # Remove bullets
+                        if clean_dest:
+                            destinations.append(clean_dest)
+                destinations = destinations[:5]
+            except:
+                destinations = ["Las Vegas, Nevada", "Miami, Florida", "New Orleans, Louisiana", "Austin, Texas", "Nashville, Tennessee"]
             
-            # Generate experience options based on previous selections
-            options_prompt = f"""
-Based on these user preferences:
-- Travel Plan: {session['travel_plan']}
-- Trip Mood: {session['trip_mood']}
-- Activity Level: {session['activity_level']}
+            session["suggested_destinations"] = destinations
+            return {
+                "next_question": "Here are some amazing US destinations perfect for your vibe! Pick one that calls to you:",
+                "options": destinations
+            }
+    
+    elif session["step"] == "manual_destination":
+        # Parse origin and destination from user input
+        session["step"] = "movie_description"
+        
+        # Extract origin and destination from user input
+        parts = answer.lower().split(' to ')
+        if len(parts) == 2:
+            session["origin"] = parts[0].strip().title()
+            session["destination"] = parts[1].strip().title()
+        else:
+            # Try other patterns like "from X to Y"
+            words = answer.split()
+            if 'from' in answer.lower() and 'to' in answer.lower():
+                from_idx = next(i for i, word in enumerate(words) if word.lower() == 'from')
+                to_idx = next(i for i, word in enumerate(words) if word.lower() == 'to')
+                session["origin"] = ' '.join(words[from_idx+1:to_idx]).title()
+                session["destination"] = ' '.join(words[to_idx+1:]).title()
+            else:
+                # If no clear origin-destination pattern, assume destination only and ask for origin
+                session["destination"] = answer.title()
+                session["step"] = "origin_input"
+                return {
+                    "next_question": f"Excellent choice! {answer} is going to be amazing! Where are you traveling from?"
+                }
+        
+        # Generate movie description based on all preferences
+        try:
+            movie_prompt = f"""
+Based on these travel preferences:
+- Travel Vibe: {session.get('travel_vibe', '')}
+- Scene Preferences: {', '.join(session.get('scene_preferences', []))}
+- Trip Goals: {', '.join(session.get('trip_goals', []))}
+- Accommodation: {session.get('accommodation_type', '')}
+- Origin: {session.get('origin', '')}
+- Destination: {session.get('destination', '')}
 
-Generate exactly 5 simple travel experience types (NOT destinations or detailed descriptions). Just short activity names.
-
-Examples:
-- Boys Trip + Beach Getaway + Packed Itinerary → ["Water Sports", "Nightlife", "Beach Parties", "Surfing Lessons", "Jet Skiing"]
-- Family Getaway + Beach Getaway + Relaxed → ["Beach Relaxation", "Family Activities", "Local Culture", "Food Experiences", "Nature Walks"]
-- Solo Adventure + Mountains + Moderate → ["Hiking", "Photography", "Local Cuisine", "Cultural Sites", "Adventure Sports"]
-
-Return ONLY this JSON format: {{"options": ["Experience1", "Experience2", "Experience3", "Experience4", "Experience5"]}}
+Generate ONE word that describes this trip like a movie genre/title. Examples: Hangover, Adventure, Romance, Discovery, Escape, etc.
+Return only the single word.
 """
             
-            options_resp = client.chat.completions.create(
+            movie_resp = client.chat.completions.create(
                 model=deployment_name,
                 messages=[
-                    {"role": "system", "content": "You generate simple travel experience names. Return only short activity types, not destinations or long descriptions."},
-                    {"role": "user", "content": options_prompt}
-                ],
-                response_format={"type": "json_object"}
-            )
-            options_json = json.loads(options_resp.choices[0].message.content)
-            experience_options = options_json.get("options", ["Adventure Sports", "Cultural Exploration", "Nightlife", "Food Tours", "Relaxation"])
-        except Exception as e:
-            print(f"Experience options generation error: {e}")
-            dynamic_response = f"Great choice! {answer} pace is perfect!"
-            # Generate contextual fallback options based on selections
-            travel_plan = session.get('travel_plan', '').lower()
-            trip_mood = session.get('trip_mood', '').lower()
-            
-            if "boys" in travel_plan and "beach" in trip_mood:
-                experience_options = ["Water Sports", "Nightlife", "Beach Parties", "Surfing Lessons", "Jet Skiing"]
-            elif "boys" in travel_plan and "party" in trip_mood:
-                experience_options = ["Nightlife", "Club Hopping", "Bar Crawls", "Live Music", "Party Tours"]
-            elif "family" in travel_plan:
-                experience_options = ["Family Activities", "Cultural Sites", "Nature Walks", "Food Tours", "Educational Tours"]
-            elif "solo" in travel_plan and "mountain" in trip_mood:
-                experience_options = ["Hiking", "Photography", "Local Cuisine", "Cultural Sites", "Adventure Sports"]
-            elif "girls" in travel_plan and "beach" in trip_mood:
-                experience_options = ["Beach Activities", "Spa & Wellness", "Shopping", "Food & Wine", "Sunset Tours"]
-            else:
-                experience_options = ["Adventure Sports", "Cultural Exploration", "Nightlife", "Food Tours", "Relaxation"]
-        
-        return {
-            "next_question": f"{dynamic_response} Which experience are you chasing?",
-            "options": experience_options
-        }
-    
-    elif session["step"] == "experience":
-        session["experience"] = answer
-        session["step"] = "final_details"
-        # Generate dynamic response
-        try:
-            response_resp = client.chat.completions.create(
-                model=deployment_name,
-                messages=[
-                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
-                    {"role": "user", "content": f"User selected '{answer}' as their experience. Generate one enthusiastic sentence acknowledging this choice."}
+                    {"role": "system", "content": "Generate a single descriptive word for the trip."},
+                    {"role": "user", "content": movie_prompt}
                 ]
             )
-            dynamic_response = response_resp.choices[0].message.content.strip()
+            movie_word = movie_resp.choices[0].message.content.strip().replace('"', '')
         except:
-            dynamic_response = f"Excellent! {answer} will make this trip unforgettable!"
+            movie_word = "Adventure"
         
-        return {
-            "next_question": f"{dynamic_response} Almost there! Please mention your origin, destination and number of travellers."
-        }
-    
-    elif session["step"] == "final_details":
+        session["movie_description"] = movie_word
         session["step"] = "ready_to_generate"
-        # Generate dynamic response
-        try:
-            response_resp = client.chat.completions.create(
-                model=deployment_name,
-                messages=[
-                    {"role": "system", "content": "You are Laura, an enthusiastic travel assistant."},
-                    {"role": "user", "content": f"User provided final details: '{answer}'. Generate one enthusiastic sentence acknowledging their complete travel information."}
-                ]
-            )
-            dynamic_response = response_resp.choices[0].message.content.strip()
-        except:
-            dynamic_response = "Perfect! I have all the details I need to create your amazing itinerary!"
         
         return {
-            "next_question": dynamic_response,
+            "next_question": f"Finally, a movie that would describe your trip is {movie_word}",
             "options": ["Generate your personalized itinerary", "Keep editing"]
+        }
+    
+    elif session["step"] == "ai_destination":
+        # User selected a suggested destination
+        session["destination"] = answer
+        session["step"] = "origin_input"
+        return {
+            "next_question": f"Excellent choice! {answer} is going to be amazing! Where are you traveling from?"
+        }
+    
+    elif session["step"] == "origin_input":
+        session["origin"] = answer.title()
+        session["step"] = "movie_description"
+        
+        # Generate movie description based on all preferences
+        try:
+            movie_prompt = f"""
+Based on these travel preferences:
+- Travel Vibe: {session.get('travel_vibe', '')}
+- Scene Preferences: {', '.join(session.get('scene_preferences', []))}
+- Trip Goals: {', '.join(session.get('trip_goals', []))}
+- Accommodation: {session.get('accommodation_type', '')}
+- Origin: {session.get('origin', '')}
+- Destination: {session.get('destination', '')}
+
+Generate ONE word that describes this trip like a movie genre/title. Examples: Hangover, Adventure, Romance, Discovery, Escape, etc.
+Return only the single word.
+"""
+            
+            movie_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "Generate a single descriptive word for the trip."},
+                    {"role": "user", "content": movie_prompt}
+                ]
+            )
+            movie_word = movie_resp.choices[0].message.content.strip().replace('"', '')
+        except:
+            movie_word = "Adventure"
+        
+        session["movie_description"] = movie_word
+        session["step"] = "ready_to_generate"
+        
+        return {
+            "next_question": f"Finally, a movie that would describe your trip is {movie_word}",
+            "options": ["Generate your personalized itinerary", "Keep editing"]
+        }
+    
+    elif session["step"] == "scene_preferences":
+        # Handle multiple selections (comma-separated like "1,2,8" or "Continue")
+        if answer.lower() == "continue" or "8" in answer or "continue" in answer.lower():
+            # Move to next step
+            session["step"] = "trip_goals"
+            # Generate dynamic trip goals based on scene preferences
+            try:
+                goals_prompt = f"""
+Based on these scene preferences: {', '.join(session['scene_preferences'])}
+Generate 8 relevant trip goals/activities. Format as emoji + activity name.
+
+Examples:
+- Beach → 🍽️ Food & Culinary, 🛍️ Shopping, 🏄 Water Sports, 🌅 Sunset Tours
+- Mountains → 🥾 Hiking, 📸 Photography, 🧘 Wellness & Spa, 🎿 Adventure Sports
+- City Life → 🛍️ Shopping, 🎭 Culture & Museums, 🍽️ Food & Culinary, 🎶 Music & Festivals
+
+Return JSON: {{"goals": ["🍽️ Food & Culinary", "🛍️ Shopping", ...]}}
+"""
+                
+                goals_resp = client.chat.completions.create(
+                    model=deployment_name,
+                    messages=[
+                        {"role": "system", "content": "Generate relevant trip goals based on scene preferences."},
+                        {"role": "user", "content": goals_prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
+                goals_json = json.loads(goals_resp.choices[0].message.content)
+                trip_goals = goals_json.get("goals", ["🍽️ Food & Culinary", "🛍️ Shopping", "🎭 Culture & Museums", "🎢 Theme Parks", "🧘 Wellness & Spa", "🚴 Adventure Sports", "📸 Photography", "🎶 Music & Festivals"])
+            except:
+                trip_goals = ["🍽️ Food & Culinary", "🛍️ Shopping", "🎭 Culture & Museums", "🎢 Theme Parks", "🧘 Wellness & Spa", "🚴 Adventure Sports", "📸 Photography", "🎶 Music & Festivals"]
+            
+            return {
+                "next_question": "Trip Goals & Fun Stuff:",
+                "options": trip_goals + ["Continue"]
+            }
+        else:
+            # Parse multiple selections (e.g., "1,2,3" or single selection)
+            scene_options = ["🏖️ Beach", "🏔️ Mountains", "🏙️ City Life", "🌲 Nature & Forests", "🏜️ Desert", "❄️ Snow & Ski", "🏛️ Historical Sites"]
+            
+            # Handle comma-separated input
+            if "," in answer:
+                selections = [s.strip() for s in answer.split(",")]
+                for sel in selections:
+                    if sel.isdigit():
+                        idx = int(sel) - 1
+                        if 0 <= idx < len(scene_options):
+                            option = scene_options[idx]
+                            if option not in session["scene_preferences"]:
+                                session["scene_preferences"].append(option)
+            else:
+                # Single selection
+                if answer.isdigit():
+                    idx = int(answer) - 1
+                    if 0 <= idx < len(scene_options):
+                        option = scene_options[idx]
+                        if option not in session["scene_preferences"]:
+                            session["scene_preferences"].append(option)
+                elif answer not in session["scene_preferences"] and answer in scene_options:
+                    session["scene_preferences"].append(answer)
+            
+            return {
+                "next_question": f"Selected: {', '.join(session['scene_preferences'])}. Choose more or continue:",
+                "options": scene_options + ["Continue"]
+            }
+    
+    elif session["step"] == "trip_goals":
+        # Handle multiple selections for trip goals (comma-separated like "1,2,9" or "Continue")
+        if answer.lower() == "continue" or "9" in answer or "continue" in answer.lower():
+            # Move to next step
+            session["step"] = "accommodation"
+            return {
+                "next_question": "Stay in Style or Explore?",
+                "options": ["🏨 Luxury Hotel", "🏡 Homestay", "🛖 Eco Lodge", "🏥️ Camping", "🛌️ Budget Stay", "🏰 Unique Stays (castles, treehouses, etc.)"]
+            }
+        else:
+            # Parse multiple selections (e.g., "1,2,3" or single selection)
+            goal_options = ["🍽️ Food & Culinary", "🛍️ Shopping", "🎭 Culture & Museums", "🎶 Music & Festivals", "🏙️ City Tours", "🍸 Nightlife & Bars", "🚶 Walking Tours", "🖼️ Art Galleries"]
+            
+            # Handle comma-separated input
+            if "," in answer:
+                selections = [s.strip() for s in answer.split(",")]
+                for sel in selections:
+                    if sel.isdigit():
+                        idx = int(sel) - 1
+                        if 0 <= idx < len(goal_options):
+                            option = goal_options[idx]
+                            if option not in session["trip_goals"]:
+                                session["trip_goals"].append(option)
+            else:
+                # Single selection
+                if answer.isdigit():
+                    idx = int(answer) - 1
+                    if 0 <= idx < len(goal_options):
+                        option = goal_options[idx]
+                        if option not in session["trip_goals"]:
+                            session["trip_goals"].append(option)
+                elif answer not in session["trip_goals"] and answer in goal_options:
+                    session["trip_goals"].append(answer)
+            
+            return {
+                "next_question": f"Selected: {', '.join(session['trip_goals'])}. Choose more or continue:",
+                "options": goal_options + ["Continue"]
+            }
+    
+    elif session["step"] == "accommodation":
+        session["accommodation_type"] = answer
+        session["step"] = "destination_choice"
+        
+        return {
+            "next_question": "Got a destination in mind or you want me to pick for you?",
+            "options": ["Yes, I have one in mind", "No, please suggest one"]
         }
     
     user_choice = answer.lower()
@@ -590,11 +835,12 @@ Return ONLY this JSON format: {{"options": ["Experience1", "Experience2", "Exper
         # Ask a clarifying question
         clarify_prompt = f"""
 The user's travel preferences so far:
-Travel Plan: {session.get('travel_plan', 'Not specified')}
-Trip Mood: {session.get('trip_mood', 'Not specified')}
-Activity Level: {session.get('activity_level', 'Not specified')}
-Experience: {session.get('experience', 'Not specified')}
-Final Details: {session['history'][-2] if len(session['history']) >= 2 else 'Not specified'}
+Travel Vibe: {session.get('travel_vibe', 'Not specified')}
+Origin: {session.get('origin', 'Not specified')}
+Destination: {session.get('destination', 'Not specified')}
+Scene Preferences: {', '.join(session.get('scene_preferences', []))}
+Trip Goals: {', '.join(session.get('trip_goals', []))}
+Accommodation: {session.get('accommodation_type', 'Not specified')}
 
 Ask ONE more clarifying question about their trip to refine their preferences.
 Make it conversational and friendly.
@@ -638,10 +884,26 @@ Make it conversational and friendly.
     if user_choice in ["1", "generate persona", "generate persona & recommendations", "persona", "generate an itinerary", "itinerary", "generate your personalized itinerary"]:
         session["ready"] = True
         days = extract_days(" ".join(session["history"]))
+        # Get user preferences for contextual recommendations
+        travel_vibe = session.get('travel_vibe', 'Unknown')
+        scene_prefs = ', '.join(session.get('scene_preferences', []))
+        trip_goals = ', '.join(session.get('trip_goals', []))
+        accommodation = session.get('accommodation_type', 'Unknown')
+        movie_desc = session.get('movie_description', 'Adventure')
+        
         plan_prompt = f"""
-You are a travel assistant. Based on this user description:
-{" ".join(session["history"])}
-Origin city: {session.get("origin", "Unknown")}
+You are a travel assistant. Based on this user profile:
+Travel Vibe: {travel_vibe}
+Origin: {session.get('origin', 'Unknown')}
+Destination: {session.get('destination', 'Unknown')}
+Scene Preferences: {scene_prefs}
+Trip Goals: {trip_goals}
+Accommodation Type: {accommodation}
+Movie Description: {movie_desc}
+Days: {extract_days(" ".join(session["history"]))}
+
+IMPORTANT: For every "why_recommended" field, reference the user's specific choices above to make it personal and contextual.
+
 Generate a travel itinerary in the following exact JSON format:
 {{
   "persona": "A short description of the traveler",
@@ -674,8 +936,11 @@ Generate a travel itinerary in the following exact JSON format:
               "highlights": "3–4 descriptive sentences about arriving at the airport and first impressions of the city.",
               "rating": 4.5,
               "reviews": {{
-                "Review 1": "Short user-style review.",
-                "Review 2": "Another short user-style review."
+                "Review 1": "Natural user review based on personal experience.",
+                "Review 2": "Another authentic user review.",
+                "Review 3": "Third genuine user review.",
+                "Review 4": "Fourth realistic user review.",
+                "Review 5": "Fifth natural user review."
               }}
             }},
             {{
@@ -690,8 +955,11 @@ Generate a travel itinerary in the following exact JSON format:
               "highlights": "3–4 descriptive sentences about the journey from the airport to the hotel, including scenery and local atmosphere.",
               "rating": 4.5,
               "reviews": {{
-                "Review 1": "Short user-style review.",
-                "Review 2": "Another short user-style review."
+                "Review 1": "Natural user review based on personal experience.",
+                "Review 2": "Another authentic user review.",
+                "Review 3": "Third genuine user review.",
+                "Review 4": "Fourth realistic user review.",
+                "Review 5": "Fifth natural user review."
               }}
             }},
             {{
@@ -705,11 +973,14 @@ Generate a travel itinerary in the following exact JSON format:
               "travel_time_from_previous": "X mins",
               "highlights": "If arrival is before check-in, include meaningful activities (brunch, sightseeing, park, etc.) so there are no long gaps.",
               "carry": "Suggested items to carry (camera, water bottle, sunscreen, etc.)",
-              "why_recommended": "1-2 sentences explaining why this pre check-in activity is recommended",
+              "why_recommended": "1-2 sentences explaining why this activity perfectly fits their {travel_vibe} vibe and chosen preferences like {scene_prefs} and {trip_goals}",
               "rating": 4.5,
               "reviews": {{
-                "Review 1": "Short user-style review.",
-                "Review 2": "Another short user-style review."
+                "Review 1": "Natural user review based on personal experience.",
+                "Review 2": "Another authentic user review.",
+                "Review 3": "Third genuine user review.",
+                "Review 4": "Fourth realistic user review.",
+                "Review 5": "Fifth natural user review."
               }}
             }},
             {{
@@ -722,10 +993,14 @@ Generate a travel itinerary in the following exact JSON format:
               "travel_distance_from_previous": "0 km",
               "travel_time_from_previous": "0 mins",
               "highlights": "3–4 descriptive sentences about the hotel facilities, ambiance, location, and why it's a good base for the trip.",
+              "why_recommended": "1-2 sentences explaining why this hotel is perfect for their {travel_vibe} trip and {accommodation} preference",
               "rating": 4.5,
               "reviews": {{
-                "Review 1": "Short user-style review.",
-                "Review 2": "Another short user-style review."
+                "Review 1": "Natural user review based on personal experience.",
+                "Review 2": "Another authentic user review.",
+                "Review 3": "Third genuine user review.",
+                "Review 4": "Fourth realistic user review.",
+                "Review 5": "Fifth natural user review."
               }}
             }},
             {{
@@ -738,11 +1013,14 @@ Generate a travel itinerary in the following exact JSON format:
               "travel_time_from_previous": "X mins",
               "highlights": "3–4 descriptive sentences about what makes this place special, what to do there, and why travelers enjoy it.",
               "carry": "Suggested items to carry (camera, water bottle, comfortable shoes, ID, tickets, etc.)",
-              "why_recommended": "1-2 sentences explaining why this place is recommended to visit",
+              "why_recommended": "1-2 sentences explaining why this place aligns perfectly with their {travel_vibe} vibe and interests in {scene_prefs} and {trip_goals}",
               "rating": 4.5,
               "reviews": {{
-                "Review 1": "Short user-style review.",
-                "Review 2": "Another short user-style review."
+                "Review 1": "Natural user review based on personal experience.",
+                "Review 2": "Another authentic user review.",
+                "Review 3": "Third genuine user review.",
+                "Review 4": "Fourth realistic user review.",
+                "Review 5": "Fifth natural user review."
               }}
             }},
             {{
@@ -755,11 +1033,14 @@ Generate a travel itinerary in the following exact JSON format:
               "travel_distance_from_previous": "X km",
               "travel_time_from_previous": "X mins",
               "highlights": "3–4 descriptive sentences about the restaurant, its cuisine, and why it's worth visiting.",
-              "why_recommended": "1-2 sentences explaining why this restaurant is recommended",
+              "why_recommended": "1-2 sentences explaining why this restaurant is perfect for their {travel_vibe} group and complements their {trip_goals} interests",
               "rating": 4.5,
               "reviews": {{
-                "Review 1": "Short user-style review.",
-                "Review 2": "Another short user-style review."
+                "Review 1": "Natural user review based on personal experience.",
+                "Review 2": "Another authentic user review.",
+                "Review 3": "Third genuine user review.",
+                "Review 4": "Fourth realistic user review.",
+                "Review 5": "Fifth natural user review."
               }}
             }},
             {{
@@ -774,8 +1055,11 @@ Generate a travel itinerary in the following exact JSON format:
               "highlights": "Always end the day by returning to the hotel for rest. Describe how this ensures comfort and closure to the day.",
               "rating": 4.5,
               "reviews": {{
-                "Review 1": "Short user-style review.",
-                "Review 2": "Another short user-style review."
+                "Review 1": "Natural user review based on personal experience.",
+                "Review 2": "Another authentic user review.",
+                "Review 3": "Third genuine user review.",
+                "Review 4": "Fourth realistic user review.",
+                "Review 5": "Fifth natural user review."
               }}
             }}
           ]
@@ -844,10 +1128,10 @@ Rules:
 - Keep travel times consistent with distances (e.g., 1 km ≈ 10 mins walk, 5 km ≈ 15 mins by taxi).
 - For each activity, always include a "highlights" field with 3–4 descriptive sentences (travel-guide style).
 - For each activity, always include a "carry" field listing practical items (if applicable).
-- For each activity, always include a "why_recommended" field with 1-2 sentences explaining why it's recommended (except for Arrival, Transfer, Return to Hotel, Hotel Check-out, Departure).
+- For each activity, always include a "why_recommended" field with 1-2 sentences explaining why it's recommended based on the user's specific choices: Travel Vibe ({travel_vibe}), Scene Preferences ({scene_prefs}), Trip Goals ({trip_goals}), and Accommodation Type ({accommodation}). Make it personal and contextual.
 - For each activity, always include a "rating" (decimal between 1.0 and 5.0).
-- For each activity, always include a "reviews" field as an object with "Review 1" and "Review 2" as keys with short reviews.
-- For hotels, always include a "why_recommended" field explaining why the hotel is chosen.
+- For each activity, always include a "reviews" field as an object with "Review 1" through "Review 5" as keys with natural user reviews.
+- For hotels, always include a "why_recommended" field explaining why this hotel perfectly matches their {travel_vibe} vibe and {accommodation} preference.
 - Always include a full round trip:
   - One inter_city_travel leg from the origin city (e.g., Bengaluru) to the destination city.
   - One inter_city_travel leg returning from the destination city back to the origin city.
@@ -918,12 +1202,21 @@ Rules:
         except Exception as e:
             print("Cosmos DB error:", e)
 
+        # Set flag to show follow-up question after result is displayed
+        session["show_followup"] = True
         return {"done": True, "feedback": [], "result": final_result, "options": ["I Need more changes", "Looks Good, Proceed to booking", "Save and arrange a call back"]}
 
     # ✅ Ask Another Question (legacy support)
     if user_choice in ["2", "ask another", "ask another question", "add more preferences", "preferences", "more preferences"]:
         clarify_prompt = f"""
-The user so far said: {" ".join(session["history"])}.
+The user's preferences:
+Travel Vibe: {session.get('travel_vibe', 'Not specified')}
+Origin: {session.get('origin', 'Not specified')}
+Destination: {session.get('destination', 'Not specified')}
+Scene Preferences: {', '.join(session.get('scene_preferences', []))}
+Trip Goals: {', '.join(session.get('trip_goals', []))}
+Accommodation: {session.get('accommodation_type', 'Not specified')}
+
 Ask ONE more clarifying question about their trip.
 Make it conversational and friendly.
 """
@@ -943,9 +1236,7 @@ Make it conversational and friendly.
 
 
 
-    # ✅ Step 5: Updates after plan is generated (fallback for complex updates)
-    if session.get("result") and answer.lower() == "i need more changes":
-        return {"next_question": "Alright, what would you like to change in your itinerary?"}
+
     
     # Handle the actual update request after user enters text
     if session.get("result") and answer.lower() not in ["i need more changes", "looks good, proceed to booking", "save and arrange a call back"]:
@@ -1444,31 +1735,40 @@ Return JSON: {{"distance": "X km", "time": "X mins by taxi"}}
                             except:
                                 new_activity[key] = "A popular destination loved by travelers."
                         elif key == "reviews":
-                            review_prompt = f"Write 2 realistic, natural human reviews for {name}. Make them sound like real travelers wrote them - include specific details, emotions, and varied writing styles. Format as: Review 1: [text] | Review 2: [text]"
+                            review_prompt = f"Write 5 realistic, natural human reviews for {name}. Make them sound like real travelers who actually experienced this place - include specific details, emotions, personal stories, and varied writing styles. Each review should feel authentic and different. Format as: Review 1: [text] | Review 2: [text] | Review 3: [text] | Review 4: [text] | Review 5: [text]"
                             try:
                                 review_resp = client.chat.completions.create(
                                     model=deployment_name,
                                     messages=[
-                                        {"role": "system", "content": "You are a travel review generator. Write authentic, varied reviews that sound like real people."},
+                                        {"role": "system", "content": "You are a travel review generator. Write authentic, varied reviews that sound like real people who have personally experienced the place. Include specific details, emotions, and personal touches."},
                                         {"role": "user", "content": review_prompt}
                                     ]
                                 )
                                 review_text = review_resp.choices[0].message.content.strip()
                                 reviews = review_text.split(" | ")
-                                if len(reviews) >= 2:
+                                if len(reviews) >= 5:
                                     new_activity[key] = {
                                         "Review 1": reviews[0].replace("Review 1: ", ""),
-                                        "Review 2": reviews[1].replace("Review 2: ", "")
+                                        "Review 2": reviews[1].replace("Review 2: ", ""),
+                                        "Review 3": reviews[2].replace("Review 3: ", ""),
+                                        "Review 4": reviews[3].replace("Review 4: ", ""),
+                                        "Review 5": reviews[4].replace("Review 5: ", "")
                                     }
                                 else:
                                     new_activity[key] = {
                                         "Review 1": f"Had an amazing time at {name}! The experience exceeded my expectations.",
-                                        "Review 2": "Definitely worth visiting. Great atmosphere and friendly staff."
+                                        "Review 2": "Definitely worth visiting. Great atmosphere and friendly staff.",
+                                        "Review 3": "Perfect spot for travelers. Loved every moment here!",
+                                        "Review 4": "Highly recommend this place. Great value and service.",
+                                        "Review 5": "One of the highlights of my trip. Will definitely come back!"
                                     }
                             except:
                                 new_activity[key] = {
                                     "Review 1": f"Had an amazing time at {name}! The experience exceeded my expectations.",
-                                    "Review 2": "Definitely worth visiting. Great atmosphere and friendly staff."
+                                    "Review 2": "Definitely worth visiting. Great atmosphere and friendly staff.",
+                                    "Review 3": "Perfect spot for travelers. Loved every moment here!",
+                                    "Review 4": "Highly recommend this place. Great value and service.",
+                                    "Review 5": "One of the highlights of my trip. Will definitely come back!"
                                 }
                         else:
                             new_activity[key] = removed_activity[key]
@@ -1493,7 +1793,10 @@ Return JSON: {{"distance": "X km", "time": "X mins by taxi"}}
                         "rating": 4.5,
                         "reviews": {
                             "Review 1": f"Had an amazing time at {name}! The experience exceeded my expectations.",
-                            "Review 2": "Definitely worth visiting. Great atmosphere and friendly staff."
+                            "Review 2": "Definitely worth visiting. Great atmosphere and friendly staff.",
+                            "Review 3": "Perfect spot for travelers. Loved every moment here!",
+                            "Review 4": "Highly recommend this place. Great value and service.",
+                            "Review 5": "One of the highlights of my trip. Will definitely come back!"
                         }
                     }
                     
