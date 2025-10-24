@@ -564,49 +564,11 @@ Return JSON: {{"name": "Official hotel name", "address": "Complete hotel address
             dynamic_response = f"Awesome! {answer} sounds amazing!"
         
         return {
-            "next_question": "Tap everything that gets your heart racing or your soul relaxing. I'll craft a trip that fits your vibe perfectly!\nYour Kind of Scene (select multiple with commas like 1,2,8):",
+            "next_question": "Tap everything that gets your heart racing or your soul relaxing. I'll craft a trip that fits your vibe perfectly!\nYour Kind of Scene",
             "options": ["🏖️ Beach", "🏔️ Mountains", "🏙️ City Life", "🌲 Nature & Forests", "🏜️ Desert", "❄️ Snow & Ski", "🏛️ Historical Sites", "Continue"]
         }
     
-    elif session["step"] == "destination_choice":
-        session["destination_choice"] = answer
-        if "yes, i have one in mind" in answer.lower():
-            session["step"] = "manual_destination"
-            return {
-                "next_question": "Perfect! What's your starting point and where are you headed?"
-            }
-        else:  # No, please suggest one
-            session["step"] = "ai_destination"
-            # Generate US destinations
-            try:
-                dest_resp = client.chat.completions.create(
-                    model=deployment_name,
-                    messages=[
-                        {"role": "system", "content": "You are a travel assistant. Suggest only destinations within the United States."},
-                        {"role": "user", "content": f"Based on travel vibe '{session['travel_vibe']}', suggest 5 popular US destinations. Return only destination names."}
-                    ]
-                )
-                destinations_text = dest_resp.choices[0].message.content.strip()
-                # Extract destinations from response and remove any numbering
-                destinations = []
-                for dest in destinations_text.split('\n'):
-                    if dest.strip():
-                        # Remove various numbering formats: "1. ", "1) ", "- ", "• ", etc.
-                        clean_dest = dest.strip()
-                        clean_dest = re.sub(r'^\d+\.\s*', '', clean_dest)  # Remove "1. "
-                        clean_dest = re.sub(r'^\d+\)\s*', '', clean_dest)   # Remove "1) "
-                        clean_dest = clean_dest.replace('- ', '').replace('• ', '')  # Remove bullets
-                        if clean_dest:
-                            destinations.append(clean_dest)
-                destinations = destinations[:5]
-            except:
-                destinations = ["Las Vegas, Nevada", "Miami, Florida", "New Orleans, Louisiana", "Austin, Texas", "Nashville, Tennessee"]
-            
-            session["suggested_destinations"] = destinations
-            return {
-                "next_question": "Here are some amazing US destinations perfect for your vibe! Pick one that calls to you:",
-                "options": destinations
-            }
+
     
     elif session["step"] == "manual_destination":
         # Parse origin and destination from user input
@@ -663,17 +625,30 @@ Return only the single word.
         session["step"] = "ready_to_generate"
         
         return {
-            "next_question": f"Finally, a movie that would describe your trip is {movie_word}",
+            "next_question": "Wow! Your trip ideas sound great. Shall I go ahead and generate an itinerary for you?",
             "options": ["Generate your personalized itinerary", "Keep editing"]
         }
     
     elif session["step"] == "ai_destination":
-        # User selected a suggested destination
-        session["destination"] = answer
-        session["step"] = "origin_input"
-        return {
-            "next_question": f"Excellent choice! {answer} is going to be amazing! Where are you traveling from?"
-        }
+        # Check if user selected from suggestions or typed their own
+        if answer in session.get("suggested_destinations", []):
+            # User selected a suggested destination
+            session["destination"] = answer
+            session["step"] = "origin_input"
+            return {
+                "next_question": f"Excellent choice! {answer} is going to be amazing! Where are you traveling from?"
+            }
+        elif answer.lower() == "choose an option (or type your own):":
+            return {
+                "next_question": "Please type your preferred destination:"
+            }
+        else:
+            # User typed their own destination
+            session["destination"] = answer.title()
+            session["step"] = "origin_input"
+            return {
+                "next_question": f"Excellent choice! {answer} is going to be amazing! Where are you traveling from?"
+            }
     
     elif session["step"] == "origin_input":
         session["origin"] = answer.title()
@@ -709,7 +684,7 @@ Return only the single word.
         session["step"] = "ready_to_generate"
         
         return {
-            "next_question": f"Finally, a movie that would describe your trip is {movie_word}",
+            "next_question": "Wow! Your trip ideas sound great. Shall I go ahead and generate an itinerary for you?",
             "options": ["Generate your personalized itinerary", "Keep editing"]
         }
     
@@ -823,9 +798,141 @@ Return JSON: {{"goals": ["🍽️ Food & Culinary", "🛍️ Shopping", ...]}}
         session["step"] = "destination_choice"
         
         return {
-            "next_question": "Got a destination in mind or you want me to pick for you?",
-            "options": ["Yes, I have one in mind", "No, please suggest one"]
+            "next_question": "Got a destination in mind or you want me to pick for you?"
         }
+    
+    elif session["step"] == "destination_choice":
+        user_input = answer.lower().strip()
+        suggestion_keywords = ["no", "suggest", "recommend", "pick for me", "pick me one", "choose for me", "don't know", "help me choose", "you pick", "surprise me"]
+        wants_suggestions = any(keyword in user_input for keyword in suggestion_keywords)
+        
+        if wants_suggestions:
+            session["step"] = "ai_destination"
+            try:
+                dest_resp = client.chat.completions.create(
+                    model=deployment_name,
+                    messages=[
+                        {"role": "system", "content": "You are a travel assistant. Suggest only destinations within the United States."},
+                        {"role": "user", "content": f"Based on travel vibe '{session['travel_vibe']}', suggest 5 popular US destinations. Return only destination names."}
+                    ]
+                )
+                destinations_text = dest_resp.choices[0].message.content.strip()
+                destinations = []
+                for dest in destinations_text.split('\n'):
+                    if dest.strip():
+                        clean_dest = dest.strip()
+                        clean_dest = re.sub(r'^\d+\.\s*', '', clean_dest)
+                        clean_dest = re.sub(r'^\d+\)\s*', '', clean_dest)
+                        clean_dest = clean_dest.replace('- ', '').replace('• ', '')
+                        if clean_dest:
+                            destinations.append(clean_dest)
+                destinations = destinations[:5]
+            except:
+                destinations = ["Las Vegas, Nevada", "Miami, Florida", "New Orleans, Louisiana", "Austin, Texas", "Nashville, Tennessee"]
+            
+            session["suggested_destinations"] = destinations
+            return {
+                "next_question": "Here are some amazing US destinations perfect for your vibe! Pick one that calls to you:",
+                "options": destinations
+            }
+        else:
+            # Use AI to parse any dynamic user input
+            parse_prompt = f"""
+User said: "{answer}"
+
+Analyze this input and extract travel information. The user might mention:
+- Origin city/location (where they're traveling FROM)
+- Destination city/location (where they're traveling TO)
+- Duration (like "2 days", "1 week")
+- Any other travel details
+
+Return JSON format:
+{{
+  "has_origin": true/false,
+  "has_destination": true/false,
+  "origin": "city name or empty string",
+  "destination": "city name or empty string",
+  "interpretation": "what the user meant"
+}}
+
+Examples:
+- "bengaluru to hawaii for 2 days" → {{"has_origin": true, "has_destination": true, "origin": "Bengaluru", "destination": "Hawaii", "interpretation": "User wants to travel from Bengaluru to Hawaii"}}
+- "I want to visit Paris" → {{"has_origin": false, "has_destination": true, "origin": "", "destination": "Paris", "interpretation": "User wants to visit Paris but didn't mention origin"}}
+- "Going to New York from Mumbai" → {{"has_origin": true, "has_destination": true, "origin": "Mumbai", "destination": "New York", "interpretation": "User wants to travel from Mumbai to New York"}}
+"""
+            
+            try:
+                parse_resp = client.chat.completions.create(
+                    model=deployment_name,
+                    messages=[
+                        {"role": "system", "content": "You are an intelligent travel input parser. Extract origin and destination from any user input."},
+                        {"role": "user", "content": parse_prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
+                parse_json = json.loads(parse_resp.choices[0].message.content)
+                
+                has_origin = parse_json.get("has_origin", False)
+                has_destination = parse_json.get("has_destination", False)
+                origin_found = parse_json.get("origin", "").strip()
+                destination_found = parse_json.get("destination", "").strip()
+                
+                if has_origin and has_destination and origin_found and destination_found:
+                    # Both origin and destination provided
+                    session["origin"] = origin_found.title()
+                    session["destination"] = destination_found.title()
+                    
+                    try:
+                        movie_prompt = f"""
+Based on these travel preferences:
+- Travel Vibe: {session.get('travel_vibe', '')}
+- Scene Preferences: {', '.join(session.get('scene_preferences', []))}
+- Trip Goals: {', '.join(session.get('trip_goals', []))}
+- Accommodation: {session.get('accommodation_type', '')}
+- Origin: {session.get('origin', '')}
+- Destination: {session.get('destination', '')}
+
+Generate ONE word that describes this trip like a movie genre/title. Examples: Hangover, Adventure, Romance, Discovery, Escape, etc.
+Return only the single word.
+"""
+                        
+                        movie_resp = client.chat.completions.create(
+                            model=deployment_name,
+                            messages=[
+                                {"role": "system", "content": "Generate a single descriptive word for the trip."},
+                                {"role": "user", "content": movie_prompt}
+                            ]
+                        )
+                        movie_word = movie_resp.choices[0].message.content.strip().replace('"', '')
+                    except:
+                        movie_word = "Adventure"
+                    
+                    session["movie_description"] = movie_word
+                    session["step"] = "ready_to_generate"
+                    
+                    return {
+                        "next_question": "Wow! Your trip ideas sound great. Shall I go ahead and generate an itinerary for you?",
+                        "options": ["Generate your personalized itinerary", "Keep editing"]
+                    }
+                elif has_destination and destination_found:
+                    # Only destination provided, ask for origin
+                    session["destination"] = destination_found.title()
+                    session["step"] = "origin_input"
+                    return {
+                        "next_question": f"Excellent choice! {destination_found} is going to be amazing! Where are you traveling from?"
+                    }
+                else:
+                    # Couldn't parse clearly, ask for clarification
+                    return {
+                        "next_question": "I'd love to help you plan your trip! Could you tell me your starting point and destination? For example: 'from Mumbai to Dubai' or 'Chennai to Singapore'"
+                    }
+            except:
+                # Fallback to treating entire input as destination
+                session["destination"] = answer.title()
+                session["step"] = "origin_input"
+                return {
+                    "next_question": f"Excellent choice! {answer} is going to be amazing! Where are you traveling from?"
+                }
     
     user_choice = answer.lower()
     
