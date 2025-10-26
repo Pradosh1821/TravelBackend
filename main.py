@@ -689,53 +689,182 @@ Return only the single word.
         }
     
     elif session["step"] == "scene_preferences":
-        # Handle multiple selections (comma-separated like "1,2,8" or "Continue")
-        if answer.lower() == "continue" or "8" in answer or "continue" in answer.lower():
+        # Parse selections first, then check for Continue
+        scene_options = ["Beach", "Mountains", "City Life", "Nature & Forests", "Desert", "Snow & Ski", "Historical Sites"]
+        
+        # Handle comma-separated input
+        if "," in answer:
+            selections = [s.strip() for s in answer.split(",")]
+            print(f"DEBUG: Parsing selections: {selections}")
+            continue_selected = False
+            for sel in selections:
+                if sel.isdigit():
+                    idx = int(sel) - 1
+                    if idx == 7:  # "Continue" is option 8 (index 7)
+                        continue_selected = True
+                    elif 0 <= idx < len(scene_options):
+                        option = scene_options[idx]
+                        print(f"DEBUG: Adding scene preference: {option}")
+                        if option not in session["scene_preferences"]:
+                            session["scene_preferences"].append(option)
+            
+            # If Continue was selected, generate AI goals
+            if continue_selected and session["scene_preferences"]:
+                session["step"] = "trip_goals"
+                selected_prefs = session['scene_preferences']
+                print(f"DEBUG: Selected scene preferences: {selected_prefs}")
+                
+                try:
+                    # Generate AI goals based on selected preferences
+                    trip_goals = []
+                    for pref in selected_prefs:
+                        if pref == "Mountains":
+                            trip_goals.extend(["Hiking", "Mountain Photography", "Rock Climbing", "Scenic Drives"])
+                        elif pref == "Historical Sites":
+                            trip_goals.extend(["Historical Tours", "Heritage Walks", "Museum Visits", "Cultural Sites"])
+                        elif pref == "City Life":
+                            trip_goals.extend(["Shopping", "Museums", "Food Tours", "City Tours"])
+                        elif pref == "Beach":
+                            trip_goals.extend(["Beach Activities", "Water Sports", "Snorkeling", "Surfing"])
+                        elif pref == "Desert":
+                            trip_goals.extend(["Desert Safari", "Stargazing", "Desert Photography", "Camel Rides"])
+                        elif pref == "Nature & Forests":
+                            trip_goals.extend(["Wildlife Watching", "Nature Photography", "Forest Walks", "Bird Watching"])
+                        elif pref == "Snow & Ski":
+                            trip_goals.extend(["Skiing", "Snowboarding", "Winter Sports", "Ice Skating"])
+                    trip_goals = trip_goals[:8]  # Limit to 8
+                    
+                    session["generated_trip_goals"] = trip_goals
+                    print(f"DEBUG: Generated trip goals: {trip_goals}")
+                    
+                    return {
+                        "next_question": "Trip Goals & Fun Stuff:",
+                        "options": trip_goals + ["Continue"]
+                    }
+                except Exception as e:
+                    print(f"DEBUG: Trip goals generation failed: {e}")
+                    return {
+                        "next_question": "Please try again:",
+                        "options": scene_options + ["Continue"]
+                    }
+            else:
+                return {
+                    "next_question": f"Selected: {', '.join(session['scene_preferences'])}. Choose more or continue:",
+                    "options": scene_options + ["Continue"]
+                }
+        
+        # Handle single selection or "continue"
+        elif answer.lower() == "continue" or answer == "8":
             # Move to next step
             session["step"] = "trip_goals"
             # Generate dynamic trip goals based on scene preferences
-            print(f"DEBUG: Selected scene preferences: {session['scene_preferences']}")
-            try:
-                num_preferences = len(session['scene_preferences'])
-                activities_per_preference = 8 // num_preferences if num_preferences > 0 else 8
-                
-                goals_prompt = f"""
-The user has selected these scene preferences: {', '.join(session['scene_preferences'])}
+            selected_prefs = session['scene_preferences']
+            print(f"DEBUG: Selected scene preferences: {selected_prefs}")
+            
+            # Generate AI goals only if preferences are selected
+            if selected_prefs:
+                try:
+                    num_preferences = len(selected_prefs)
+                    activities_per_preference = 8 // num_preferences if num_preferences > 0 else 8
+                    
+                    # Create activity mapping
+                    activity_map = {
+                        'City Life': 'Shopping, Museums, Food Tours, Nightlife, Art Galleries, City Tours',
+                        'Historical Sites': 'Historical Tours, Museum Visits, Heritage Walks, Archaeological Sites, Monument Visits, Cultural Sites',
+                        'Desert': 'Desert Safari, Stargazing, Desert Photography, Camel Rides, Sand Dunes, Desert Camping',
+                        'Beach': 'Beach Activities, Water Sports, Snorkeling, Sunset Cruises, Beach Volleyball, Surfing',
+                        'Mountains': 'Hiking, Mountain Biking, Rock Climbing, Scenic Drives, Mountain Photography, Adventure Sports',
+                        'Nature & Forests': 'Wildlife Watching, Nature Photography, Forest Walks, Bird Watching, Eco Tours, Camping',
+                        'Snow & Ski': 'Skiing, Snowboarding, Winter Sports, Ice Skating, Snow Photography, Winter Festivals'
+                    }
+                    
+                    pref_activities = []
+                    for pref in selected_prefs:
+                        if pref in activity_map:
+                            pref_activities.append(f"- {pref}: {activity_map[pref]}")
+                    
+                    goals_prompt = f"""
+CRITICAL: The user has selected ONLY these scene preferences: {', '.join(selected_prefs)}
 
-Generate exactly 8 SHORT activity names (2-3 words max) by distributing them EVENLY across the selected preferences. If user selected {num_preferences} preferences, include approximately {activities_per_preference} activities from each preference.
+You MUST generate activities ONLY from the selected preferences above. DO NOT include activities from other preferences.
 
-Activity options by preference:
-City Life: Shopping, Museums, Food Tours, Nightlife, Art Galleries, City Tours, Architecture, Local Markets
-Historical Sites: Historical Tours, Museum Visits, Heritage Walks, Archaeological Sites, Monument Visits, Cultural Sites
-Desert: Desert Safari, Stargazing, Desert Photography, Camel Rides, Sand Dunes, Desert Camping
-Beach: Beach Activities, Water Sports, Snorkeling, Sunset Cruises, Beach Volleyball, Surfing
-Mountains: Hiking, Mountain Biking, Rock Climbing, Scenic Drives, Mountain Photography, Adventure Sports
-Nature & Forests: Wildlife Watching, Nature Photography, Forest Walks, Bird Watching, Eco Tours, Camping
-Snow & Ski: Skiing, Snowboarding, Winter Sports, Ice Skating, Snow Photography, Winter Festivals
+Selected preferences and their activities:
+{chr(10).join(pref_activities)}
 
-IMPORTANT: Distribute activities evenly. For example, if user selected "City Life" and "Beach", include 4 city activities and 4 beach activities.
+Generate exactly 8 activities distributed evenly across ONLY the {num_preferences} selected preferences above.
 
-Return JSON with exactly 8 activities distributed evenly: {{"goals": ["Shopping", "Museums", "Food Tours", "Nightlife", "Beach Activities", "Water Sports", "Snorkeling", "Surfing"]}}
+Return JSON: {{"goals": ["Activity1", "Activity2", "Activity3", "Activity4", "Activity5", "Activity6", "Activity7", "Activity8"]}}
 """
+                    
+                    goals_resp = client.chat.completions.create(
+                        model=deployment_name,
+                        messages=[
+                            {"role": "system", "content": f"You MUST generate activities ONLY from these selected preferences: {', '.join(selected_prefs)}. DO NOT include activities from other preferences."},
+                            {"role": "user", "content": goals_prompt}
+                        ],
+                        response_format={"type": "json_object"}
+                    )
+                    goals_json = json.loads(goals_resp.choices[0].message.content)
+                    trip_goals = goals_json.get("goals", [])
+                    print(f"DEBUG: AI generated trip goals: {trip_goals}")
+                    
+                    # Validate that activities match selected preferences
+                    valid_activities = []
+                    for pref in selected_prefs:
+                        if pref == "City Life":
+                            valid_activities.extend(["Shopping", "Museums", "Food Tours", "Nightlife", "Art Galleries", "City Tours"])
+                        elif pref == "Historical Sites":
+                            valid_activities.extend(["Historical Tours", "Museum Visits", "Heritage Walks", "Archaeological Sites", "Monument Visits", "Cultural Sites"])
+                        elif pref == "Mountains":
+                            valid_activities.extend(["Hiking", "Mountain Biking", "Rock Climbing", "Scenic Drives", "Mountain Photography", "Adventure Sports"])
+                        elif pref == "Beach":
+                            valid_activities.extend(["Beach Activities", "Water Sports", "Snorkeling", "Sunset Cruises", "Beach Volleyball", "Surfing"])
+                        elif pref == "Desert":
+                            valid_activities.extend(["Desert Safari", "Stargazing", "Desert Photography", "Camel Rides", "Sand Dunes", "Desert Camping"])
+                        elif pref == "Nature & Forests":
+                            valid_activities.extend(["Wildlife Watching", "Nature Photography", "Forest Walks", "Bird Watching", "Eco Tours", "Camping"])
+                        elif pref == "Snow & Ski":
+                            valid_activities.extend(["Skiing", "Snowboarding", "Winter Sports", "Ice Skating", "Snow Photography", "Winter Festivals"])
+                    
+                    # If AI returned invalid activities, use manual selection
+                    if not all(any(activity.lower() in valid_act.lower() or valid_act.lower() in activity.lower() for valid_act in valid_activities) for activity in trip_goals):
+                        print(f"DEBUG: AI returned invalid activities, using manual selection")
+                        trip_goals = valid_activities[:8]
+                    
+                    # Ensure we have exactly 8 goals
+                    if len(trip_goals) < 8:
+                        trip_goals.extend(valid_activities[:8-len(trip_goals)])
+                    trip_goals = trip_goals[:8]
+                    
+                except Exception as e:
+                    print(f"DEBUG: Trip goals generation failed: {e}")
+                    # Use manual selection from selected preferences only
+                    trip_goals = []
+                    for pref in selected_prefs:
+                        if pref == "Mountains":
+                            trip_goals.extend(["Hiking", "Mountain Photography", "Rock Climbing", "Scenic Drives"])
+                        elif pref == "Historical Sites":
+                            trip_goals.extend(["Historical Tours", "Heritage Walks", "Museum Visits", "Cultural Sites"])
+                        elif pref == "City Life":
+                            trip_goals.extend(["Shopping", "Museums", "Food Tours", "City Tours"])
+                        elif pref == "Beach":
+                            trip_goals.extend(["Beach Activities", "Water Sports", "Snorkeling", "Surfing"])
+                        elif pref == "Desert":
+                            trip_goals.extend(["Desert Safari", "Stargazing", "Desert Photography", "Camel Rides"])
+                        elif pref == "Nature & Forests":
+                            trip_goals.extend(["Wildlife Watching", "Nature Photography", "Forest Walks", "Bird Watching"])
+                        elif pref == "Snow & Ski":
+                            trip_goals.extend(["Skiing", "Snowboarding", "Winter Sports", "Ice Skating"])
+                    trip_goals = trip_goals[:8]  # Limit to 8
                 
-                goals_resp = client.chat.completions.create(
-                    model=deployment_name,
-                    messages=[
-                        {"role": "system", "content": "Generate SHORT activity names (2-3 words max) distributed EVENLY across selected preferences. If 2 preferences selected, include 4 activities from each."},
-                        {"role": "user", "content": goals_prompt}
-                    ],
-                    response_format={"type": "json_object"}
-                )
-                goals_json = json.loads(goals_resp.choices[0].message.content)
-                trip_goals = goals_json.get("goals", [])
-                print(f"DEBUG: AI generated trip goals: {trip_goals}")
-                
-                # Ensure we have 8 goals
-                if len(trip_goals) < 8:
-                    trip_goals.extend(["Food & Culinary", "Photography", "Local Culture", "Sightseeing"][:8-len(trip_goals)])
-            except Exception as e:
-                print(f"DEBUG: Trip goals generation failed: {e}")
-                trip_goals = ["Food & Culinary", "Shopping", "Culture & Museums", "Theme Parks", "Wellness & Spa", "Adventure Sports", "Photography", "Music & Festivals"]
+                # Store the generated goals in session for later use
+                session["generated_trip_goals"] = trip_goals
+            else:
+                # No preferences selected, ask user to select at least one
+                return {
+                    "next_question": "Please select at least one scene preference first:",
+                    "options": ["Beach", "Mountains", "City Life", "Nature & Forests", "Desert", "Snow & Ski", "Historical Sites", "Continue"]
+                }
             
             return {
                 "next_question": "Trip Goals & Fun Stuff:",
@@ -748,11 +877,13 @@ Return JSON with exactly 8 activities distributed evenly: {{"goals": ["Shopping"
             # Handle comma-separated input
             if "," in answer:
                 selections = [s.strip() for s in answer.split(",")]
+                print(f"DEBUG: Parsing selections: {selections}")
                 for sel in selections:
                     if sel.isdigit():
                         idx = int(sel) - 1
                         if 0 <= idx < len(scene_options):
                             option = scene_options[idx]
+                            print(f"DEBUG: Adding scene preference: {option}")
                             if option not in session["scene_preferences"]:
                                 session["scene_preferences"].append(option)
             else:
@@ -766,6 +897,7 @@ Return JSON with exactly 8 activities distributed evenly: {{"goals": ["Shopping"
                 elif answer not in session["scene_preferences"] and answer in scene_options:
                     session["scene_preferences"].append(answer)
             
+            print(f"DEBUG: Current scene preferences: {session['scene_preferences']}")
             return {
                 "next_question": f"Selected: {', '.join(session['scene_preferences'])}. Choose more or continue:",
                 "options": scene_options + ["Continue"]
@@ -781,8 +913,8 @@ Return JSON with exactly 8 activities distributed evenly: {{"goals": ["Shopping"
                 "options": ["Luxury Hotel", "Homestay", "Eco Lodge", "Camping", "Budget Stay", "Unique Stays (castles, treehouses, etc.)"]
             }
         else:
-            # Parse multiple selections (e.g., "1,2,3" or single selection)
-            goal_options = ["Food & Culinary", "Shopping", "Culture & Museums", "Music & Festivals", "City Tours", "Nightlife & Bars", "Walking Tours", "Art Galleries"]
+            # Use the dynamically generated goals from AI (stored in session during scene_preferences step)
+            goal_options = session.get("generated_trip_goals", [])
             
             # Handle comma-separated input
             if "," in answer:
