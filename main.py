@@ -565,7 +565,7 @@ Return JSON: {{"name": "Official hotel name", "address": "Complete hotel address
         
         return {
             "next_question": "Tap everything that gets your heart racing or your soul relaxing. I'll craft a trip that fits your vibe perfectly!\nYour Kind of Scene",
-            "options": ["🏖️ Beach", "🏔️ Mountains", "🏙️ City Life", "🌲 Nature & Forests", "🏜️ Desert", "❄️ Snow & Ski", "🏛️ Historical Sites", "Continue"]
+            "options": ["Beach", "Mountains", "City Life", "Nature & Forests", "Desert", "Snow & Ski", "Historical Sites", "Continue"]
         }
     
 
@@ -694,31 +694,48 @@ Return only the single word.
             # Move to next step
             session["step"] = "trip_goals"
             # Generate dynamic trip goals based on scene preferences
+            print(f"DEBUG: Selected scene preferences: {session['scene_preferences']}")
             try:
+                num_preferences = len(session['scene_preferences'])
+                activities_per_preference = 8 // num_preferences if num_preferences > 0 else 8
+                
                 goals_prompt = f"""
-Based on these scene preferences: {', '.join(session['scene_preferences'])}
-Generate 8 relevant trip goals/activities. Format as emoji + activity name.
+The user has selected these scene preferences: {', '.join(session['scene_preferences'])}
 
-Examples:
-- Beach → 🍽️ Food & Culinary, 🛍️ Shopping, 🏄 Water Sports, 🌅 Sunset Tours
-- Mountains → 🥾 Hiking, 📸 Photography, 🧘 Wellness & Spa, 🎿 Adventure Sports
-- City Life → 🛍️ Shopping, 🎭 Culture & Museums, 🍽️ Food & Culinary, 🎶 Music & Festivals
+Generate exactly 8 SHORT activity names (2-3 words max) by distributing them EVENLY across the selected preferences. If user selected {num_preferences} preferences, include approximately {activities_per_preference} activities from each preference.
 
-Return JSON: {{"goals": ["🍽️ Food & Culinary", "🛍️ Shopping", ...]}}
+Activity options by preference:
+City Life: Shopping, Museums, Food Tours, Nightlife, Art Galleries, City Tours, Architecture, Local Markets
+Historical Sites: Historical Tours, Museum Visits, Heritage Walks, Archaeological Sites, Monument Visits, Cultural Sites
+Desert: Desert Safari, Stargazing, Desert Photography, Camel Rides, Sand Dunes, Desert Camping
+Beach: Beach Activities, Water Sports, Snorkeling, Sunset Cruises, Beach Volleyball, Surfing
+Mountains: Hiking, Mountain Biking, Rock Climbing, Scenic Drives, Mountain Photography, Adventure Sports
+Nature & Forests: Wildlife Watching, Nature Photography, Forest Walks, Bird Watching, Eco Tours, Camping
+Snow & Ski: Skiing, Snowboarding, Winter Sports, Ice Skating, Snow Photography, Winter Festivals
+
+IMPORTANT: Distribute activities evenly. For example, if user selected "City Life" and "Beach", include 4 city activities and 4 beach activities.
+
+Return JSON with exactly 8 activities distributed evenly: {{"goals": ["Shopping", "Museums", "Food Tours", "Nightlife", "Beach Activities", "Water Sports", "Snorkeling", "Surfing"]}}
 """
                 
                 goals_resp = client.chat.completions.create(
                     model=deployment_name,
                     messages=[
-                        {"role": "system", "content": "Generate relevant trip goals based on scene preferences."},
+                        {"role": "system", "content": "Generate SHORT activity names (2-3 words max) distributed EVENLY across selected preferences. If 2 preferences selected, include 4 activities from each."},
                         {"role": "user", "content": goals_prompt}
                     ],
                     response_format={"type": "json_object"}
                 )
                 goals_json = json.loads(goals_resp.choices[0].message.content)
-                trip_goals = goals_json.get("goals", ["🍽️ Food & Culinary", "🛍️ Shopping", "🎭 Culture & Museums", "🎢 Theme Parks", "🧘 Wellness & Spa", "🚴 Adventure Sports", "📸 Photography", "🎶 Music & Festivals"])
-            except:
-                trip_goals = ["🍽️ Food & Culinary", "🛍️ Shopping", "🎭 Culture & Museums", "🎢 Theme Parks", "🧘 Wellness & Spa", "🚴 Adventure Sports", "📸 Photography", "🎶 Music & Festivals"]
+                trip_goals = goals_json.get("goals", [])
+                print(f"DEBUG: AI generated trip goals: {trip_goals}")
+                
+                # Ensure we have 8 goals
+                if len(trip_goals) < 8:
+                    trip_goals.extend(["Food & Culinary", "Photography", "Local Culture", "Sightseeing"][:8-len(trip_goals)])
+            except Exception as e:
+                print(f"DEBUG: Trip goals generation failed: {e}")
+                trip_goals = ["Food & Culinary", "Shopping", "Culture & Museums", "Theme Parks", "Wellness & Spa", "Adventure Sports", "Photography", "Music & Festivals"]
             
             return {
                 "next_question": "Trip Goals & Fun Stuff:",
@@ -726,7 +743,7 @@ Return JSON: {{"goals": ["🍽️ Food & Culinary", "🛍️ Shopping", ...]}}
             }
         else:
             # Parse multiple selections (e.g., "1,2,3" or single selection)
-            scene_options = ["🏖️ Beach", "🏔️ Mountains", "🏙️ City Life", "🌲 Nature & Forests", "🏜️ Desert", "❄️ Snow & Ski", "🏛️ Historical Sites"]
+            scene_options = ["Beach", "Mountains", "City Life", "Nature & Forests", "Desert", "Snow & Ski", "Historical Sites"]
             
             # Handle comma-separated input
             if "," in answer:
@@ -761,11 +778,11 @@ Return JSON: {{"goals": ["🍽️ Food & Culinary", "🛍️ Shopping", ...]}}
             session["step"] = "accommodation"
             return {
                 "next_question": "Stay in Style or Explore?",
-                "options": ["🏨 Luxury Hotel", "🏡 Homestay", "🛖 Eco Lodge", "🏥️ Camping", "🛌️ Budget Stay", "🏰 Unique Stays (castles, treehouses, etc.)"]
+                "options": ["Luxury Hotel", "Homestay", "Eco Lodge", "Camping", "Budget Stay", "Unique Stays (castles, treehouses, etc.)"]
             }
         else:
             # Parse multiple selections (e.g., "1,2,3" or single selection)
-            goal_options = ["🍽️ Food & Culinary", "🛍️ Shopping", "🎭 Culture & Museums", "🎶 Music & Festivals", "🏙️ City Tours", "🍸 Nightlife & Bars", "🚶 Walking Tours", "🖼️ Art Galleries"]
+            goal_options = ["Food & Culinary", "Shopping", "Culture & Museums", "Music & Festivals", "City Tours", "Nightlife & Bars", "Walking Tours", "Art Galleries"]
             
             # Handle comma-separated input
             if "," in answer:
@@ -802,33 +819,92 @@ Return JSON: {{"goals": ["🍽️ Food & Culinary", "🛍️ Shopping", ...]}}
         }
     
     elif session["step"] == "destination_choice":
-        user_input = answer.lower().strip()
-        suggestion_keywords = ["no", "suggest", "recommend", "pick for me", "pick me one", "choose for me", "don't know", "help me choose", "you pick", "surprise me"]
-        wants_suggestions = any(keyword in user_input for keyword in suggestion_keywords)
+        # Use AI to analyze if user wants suggestions
+        analysis_prompt = f"""
+User was asked: "Got a destination in mind or you want me to pick for you?"
+User answered: "{answer}"
+
+Analyze if the user wants AI to suggest destinations or if they have their own destination in mind.
+Return JSON: {{"wants_suggestions": true/false, "reasoning": "explanation"}}
+
+Examples:
+- "pick for me" → {{"wants_suggestions": true, "reasoning": "User explicitly asks for suggestions"}}
+- "I want to go to Paris" → {{"wants_suggestions": false, "reasoning": "User has specific destination"}}
+- "surprise me" → {{"wants_suggestions": true, "reasoning": "User wants AI to choose"}}
+- "no idea" → {{"wants_suggestions": true, "reasoning": "User needs help choosing"}}
+"""
+        
+        try:
+            analysis_resp = client.chat.completions.create(
+                model=deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are an intelligent intent analyzer."},
+                    {"role": "user", "content": analysis_prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            analysis_json = json.loads(analysis_resp.choices[0].message.content)
+            wants_suggestions = analysis_json.get("wants_suggestions", False)
+        except:
+            # Fallback to keyword matching if AI fails
+            user_input = answer.lower().strip()
+            suggestion_keywords = ["no", "suggest", "recommend", "pick for me", "pick me one", "choose for me", "don't know", "help me choose", "you pick", "surprise me"]
+            wants_suggestions = any(keyword in user_input for keyword in suggestion_keywords)
         
         if wants_suggestions:
             session["step"] = "ai_destination"
+            dest_prompt = f"""
+Based on these travel preferences:
+- Travel Vibe: {session.get('travel_vibe', '')}
+- Scene Preferences: {', '.join(session.get('scene_preferences', []))}
+- Trip Goals: {', '.join(session.get('trip_goals', []))}
+- Accommodation: {session.get('accommodation_type', '')}
+
+Suggest 5 perfect US destinations that match these preferences. Consider what type of experiences they're looking for.
+Return JSON format: {{"destinations": ["City, State", "City, State", "City, State", "City, State", "City, State"]}}
+
+Examples:
+- For beach lovers: Miami, Florida; San Diego, California; etc.
+- For adventure seekers: Denver, Colorado; Portland, Oregon; etc.
+- For culture enthusiasts: New York, New York; San Francisco, California; etc.
+"""
+            
             try:
                 dest_resp = client.chat.completions.create(
                     model=deployment_name,
                     messages=[
-                        {"role": "system", "content": "You are a travel assistant. Suggest only destinations within the United States."},
-                        {"role": "user", "content": f"Based on travel vibe '{session['travel_vibe']}', suggest 5 popular US destinations. Return only destination names."}
-                    ]
+                        {"role": "system", "content": "You are a travel assistant specializing in US destinations. Match destinations to user preferences."},
+                        {"role": "user", "content": dest_prompt}
+                    ],
+                    response_format={"type": "json_object"}
                 )
-                destinations_text = dest_resp.choices[0].message.content.strip()
-                destinations = []
-                for dest in destinations_text.split('\n'):
-                    if dest.strip():
-                        clean_dest = dest.strip()
-                        clean_dest = re.sub(r'^\d+\.\s*', '', clean_dest)
-                        clean_dest = re.sub(r'^\d+\)\s*', '', clean_dest)
-                        clean_dest = clean_dest.replace('- ', '').replace('• ', '')
-                        if clean_dest:
-                            destinations.append(clean_dest)
-                destinations = destinations[:5]
-            except:
-                destinations = ["Las Vegas, Nevada", "Miami, Florida", "New Orleans, Louisiana", "Austin, Texas", "Nashville, Tennessee"]
+                dest_json = json.loads(dest_resp.choices[0].message.content)
+                destinations = dest_json.get("destinations", [])
+                print(f"DEBUG: AI returned destinations: {destinations}")
+                
+                # Ensure we have exactly 5 destinations
+                if len(destinations) < 5:
+                    # Add more destinations if needed
+                    additional_prompt = f"Add {5 - len(destinations)} more US destinations to this list: {destinations}. Return JSON with all destinations."
+                    try:
+                        additional_resp = client.chat.completions.create(
+                            model=deployment_name,
+                            messages=[
+                                {"role": "system", "content": "You are a travel assistant."},
+                                {"role": "user", "content": additional_prompt}
+                            ],
+                            response_format={"type": "json_object"}
+                        )
+                        additional_json = json.loads(additional_resp.choices[0].message.content)
+                        destinations = additional_json.get("destinations", destinations)
+                    except:
+                        pass
+                
+                destinations = destinations[:5]  # Ensure max 5
+            except Exception as e:
+                print(f"DEBUG: AI destination generation failed: {e}")
+                # Minimal fallback if AI completely fails
+                destinations = ["New York, New York", "Los Angeles, California", "Chicago, Illinois", "Miami, Florida", "Las Vegas, Nevada"]
             
             session["suggested_destinations"] = destinations
             return {
